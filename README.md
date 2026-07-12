@@ -2,6 +2,9 @@
 
 一个在浏览器中运行的 3D 运镜与分镜工具。你可以摆放人物、道具和生活模型，为人物或物体制作动作，再像玩第一人称游戏一样用 `WASD` 走镜头、记录轨迹点并预演成片。
 
+- 在线体验：<https://xiaozangao.github.io/3d-director-desk/>
+- 源代码：<https://github.com/xiaozangao/3d-director-desk>
+
 ![3D 导演台界面示例](images/06.png)
 
 ## 主要功能
@@ -30,7 +33,7 @@
 Windows 和 macOS 使用同一套命令。先下载项目：
 
 ```bash
-git clone https://github.com/你的用户名/3d-director-desk.git
+git clone https://github.com/xiaozangao/3d-director-desk.git
 cd 3d-director-desk
 ```
 
@@ -160,7 +163,7 @@ git init
 git add .
 git commit -m "首次开源发布"
 git branch -M main
-git remote add origin https://github.com/你的用户名/你的仓库名.git
+git remote add origin https://github.com/YOUR_GITHUB_NAME/3d-director-desk.git
 git push -u origin main
 ```
 
@@ -170,7 +173,7 @@ git push -u origin main
 6. 回到 `Settings > Pages` 查看在线地址，通常格式为：
 
 ```text
-https://你的用户名.github.io/你的仓库名/
+https://YOUR_GITHUB_NAME.github.io/3d-director-desk/
 ```
 
 以后只需把修改推送到 `main`，在线体验会自动更新。由于 GitHub Pages 必须使用 HTTPS，建议只从正式 Pages 地址分享，不要分享 Actions 中的临时构建链接。
@@ -181,7 +184,7 @@ https://你的用户名.github.io/你的仓库名/
 
 ```html
 <iframe
-  src="https://你的用户名.github.io/你的仓库名/?instanceId=node_123&theme=dark&hostOrigin=https%3A%2F%2Fexample.com"
+  src="https://xiaozangao.github.io/3d-director-desk/?instanceId=node_123&theme=dark&hostOrigin=https%3A%2F%2Fexample.com"
 ></iframe>
 ```
 
