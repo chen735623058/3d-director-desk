@@ -8,6 +8,7 @@ import {
   InspectorSection,
 } from "./InspectorControls";
 import { MANNEQUIN_POSE_PRESETS } from "../presets/mannequinPosePresets";
+import { CHARACTER_ACTION_PRESETS } from "../presets/characterActionPresets";
 import { getCrowdAnchorTransform, useDirectorStore } from "../store/directorStore";
 
 function replaceAxis(tuple: [number, number, number], axis: 0 | 1 | 2, value: number): [number, number, number] {
@@ -15,7 +16,7 @@ function replaceAxis(tuple: [number, number, number], axis: 0 | 1 | 2, value: nu
 }
 
 export function CharacterPanel() {
-  const [activeTab, setActiveTab] = useState<"properties" | "pose">("properties");
+  const [activeTab, setActiveTab] = useState<"properties" | "pose" | "action">("properties");
   const selectedCrowdId = useDirectorStore((state) => state.selectedCrowdId);
   const selectedObjectId = useDirectorStore((state) => state.selectedObjectId);
   const objects = useDirectorStore((state) => state.project.objects);
@@ -31,6 +32,10 @@ export function CharacterPanel() {
   const applyCrowdPosePreset = useDirectorStore((state) => state.applyCrowdPosePreset);
   const updatePoseControl = useDirectorStore((state) => state.updatePoseControl);
   const updateCrowdPoseControl = useDirectorStore((state) => state.updateCrowdPoseControl);
+  const applyCharacterActionPreset = useDirectorStore((state) => state.applyCharacterActionPreset);
+  const applyCrowdActionPreset = useDirectorStore((state) => state.applyCrowdActionPreset);
+  const setCameraMotionProgress = useDirectorStore((state) => state.setCameraMotionProgress);
+  const setCameraMotionPlaying = useDirectorStore((state) => state.setCameraMotionPlaying);
 
   const selection = useMemo(() => {
     const role = objects.find((item) => item.id === selectedObjectId && item.kind === "character");
@@ -154,6 +159,7 @@ export function CharacterPanel() {
       tabs={[
         { label: "属性", active: activeTab === "properties", onClick: () => setActiveTab("properties") },
         { label: "姿势", active: activeTab === "pose", onClick: () => setActiveTab("pose") },
+        { label: "动作", active: activeTab === "action", onClick: () => setActiveTab("action") },
       ]}
     >
       {activeTab === "properties" ? (
@@ -333,7 +339,7 @@ export function CharacterPanel() {
             }
           />
         </>
-      ) : (
+      ) : activeTab === "pose" ? (
         <InspectorSection title="姿势预设" className="pose-preset-section">
           {role.characterRig ? (
             <>
@@ -383,6 +389,39 @@ export function CharacterPanel() {
           ) : (
             <p>该模型未识别到标准 humanoid 骨骼，暂不支持姿势编辑。</p>
           )}
+        </InspectorSection>
+      ) : (
+        <InspectorSection title="动作预设" className="pose-preset-section">
+          <div className="preset-grid">
+            <button
+              className={!role.characterRig?.actionPresetId ? "is-active" : undefined}
+              type="button"
+              onClick={() => {
+                if (isCrowd && selection.crowdId) applyCrowdActionPreset(selection.crowdId, null);
+                else applyCharacterActionPreset(role.id, null);
+                setCameraMotionPlaying(false);
+              }}
+            >
+              无动作
+            </button>
+            {CHARACTER_ACTION_PRESETS.map((preset) => (
+              <button
+                key={preset.id}
+                className={role.characterRig?.actionPresetId === preset.id ? "is-active" : undefined}
+                type="button"
+                aria-label={`播放动作 ${preset.label}`}
+                onClick={() => {
+                  if (isCrowd && selection.crowdId) applyCrowdActionPreset(selection.crowdId, preset.id);
+                  else applyCharacterActionPreset(role.id, preset.id);
+                  setCameraMotionProgress(0);
+                  setCameraMotionPlaying(true);
+                }}
+              >
+                <span>{preset.label}</span>
+                <small>{preset.duration.toFixed(2)} 秒</small>
+              </button>
+            ))}
+          </div>
         </InspectorSection>
       )}
     </InspectorPanel>

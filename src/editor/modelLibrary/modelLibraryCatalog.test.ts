@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { getModelLibraryItems } from "./modelLibraryCatalog";
+import { getModelLibraryItems, LOCAL_GUO_ASSETS_AVAILABLE } from "./modelLibraryCatalog";
 
 it("ships a useful built-in everyday model collection without external files", () => {
   const items = getModelLibraryItems();
@@ -25,4 +25,20 @@ it("ships a useful built-in everyday model collection without external files", (
     fileName: "sedan_low.fbx",
   });
   expect(items.find((item) => item.name === "家用轿车")?.thumbUrl).toMatch(/^data:image\/svg\+xml/);
+});
+
+it("indexes the locally installed character and prop libraries", () => {
+  const items = getModelLibraryItems();
+
+  if (LOCAL_GUO_ASSETS_AVAILABLE) {
+    expect(items.filter((item) => item.kind === "character")).toHaveLength(37);
+    expect(items.filter((item) => item.id.startsWith("guo-prop:"))).toHaveLength(180);
+    expect(items.find((item) => item.kind === "character")).toMatchObject({
+      categoryId: "characters",
+    });
+    return;
+  }
+
+  expect(items.some((item) => item.kind === "character")).toBe(false);
+  expect(items.some((item) => item.id.startsWith("guo-prop:"))).toBe(false);
 });

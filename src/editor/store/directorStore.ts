@@ -155,6 +155,8 @@ export interface DirectorActions {
   toggleObjectLocked: (id: string) => void;
   applyPosePreset: (id: string, presetId: PosePresetId) => void;
   applyCrowdPosePreset: (crowdId: string, presetId: PosePresetId) => void;
+  applyCharacterActionPreset: (id: string, presetId: string | null) => void;
+  applyCrowdActionPreset: (crowdId: string, presetId: string | null) => void;
   updatePoseControl: (id: string, key: string, value: number) => void;
   updateCrowdPoseControl: (crowdId: string, key: string, value: number) => void;
   setActiveCamera: (cameraId: string) => void;
@@ -783,7 +785,7 @@ function createSceneObjectFromAsset(asset: DirectorAssetRef, existingObjects: Di
     existingObjects.length + 1
   );
 
-  return {
+  const object = {
     id: nextObjectId,
     name: asset.name ?? createDisplayNameFromFileName(asset.fileName),
     kind: asset.kind,
@@ -791,6 +793,19 @@ function createSceneObjectFromAsset(asset: DirectorAssetRef, existingObjects: Di
     locked: false,
     assetRefId: asset.id,
     transform: createTransform([0, 0, 0]),
+  } satisfies DirectorObject;
+
+  if (asset.kind !== "character") return object;
+
+  return {
+    ...object,
+    bodyType: "mannequin",
+    characterRig: {
+      rigType: "mixamo",
+      posePresetId: "stand",
+      actionPresetId: null,
+      controls: {},
+    },
   } satisfies DirectorObject;
 }
 
@@ -2104,6 +2119,7 @@ export const useDirectorStore = create<DirectorStore>((set, get) => {
                 ? {
                     ...item.characterRig,
                     posePresetId: presetId,
+                    actionPresetId: null,
                     controls: preset ? { ...preset.controls } : item.characterRig.controls,
                   }
                 : item.characterRig,
@@ -2127,6 +2143,7 @@ export const useDirectorStore = create<DirectorStore>((set, get) => {
                       ? {
                           ...item.characterRig,
                           posePresetId: presetId,
+                          actionPresetId: null,
                           controls: preset ? { ...preset.controls } : item.characterRig.controls,
                         }
                       : item.characterRig,
@@ -2136,6 +2153,31 @@ export const useDirectorStore = create<DirectorStore>((set, get) => {
           },
         };
       }),
+    applyCharacterActionPreset: (id, presetId) =>
+      commitMutation((state) => ({
+        ...state,
+        project: {
+          ...state.project,
+          objects: updateObjectById(state.project.objects, id, (item) => ({
+            ...item,
+            characterRig: item.characterRig
+              ? { ...item.characterRig, actionPresetId: presetId }
+              : item.characterRig,
+          })),
+        },
+      })),
+    applyCrowdActionPreset: (crowdId, presetId) =>
+      commitMutation((state) => ({
+        ...state,
+        project: {
+          ...state.project,
+          objects: state.project.objects.map((item) =>
+            item.kind === "character" && item.crowdId === crowdId && item.characterRig
+              ? { ...item, characterRig: { ...item.characterRig, actionPresetId: presetId } }
+              : item
+          ),
+        },
+      })),
     updatePoseControl: (id, key, value) =>
       commitMutation((state) => ({
         ...state,

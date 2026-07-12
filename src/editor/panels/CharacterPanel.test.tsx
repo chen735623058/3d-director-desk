@@ -157,3 +157,17 @@ it("applies pose presets to every member in a selected crowd group", async () =>
   expect(new Set(crowdMembers.map((item) => item.characterRig?.posePresetId))).toEqual(new Set(["t-pose"]));
   expect(new Set(crowdMembers.map((item) => item.characterRig?.controls["leftShoulder.spread"]))).toEqual(new Set([-70]));
 });
+
+it("selects and starts a character action preset", async () => {
+  const user = userEvent.setup();
+  render(<CharacterPanel />);
+
+  await user.click(screen.getByRole("button", { name: "动作" }));
+  await user.click(screen.getByRole("button", { name: "播放动作 正常行走" }));
+
+  const state = useDirectorStore.getState();
+  const role = state.project.objects.find((item) => item.id === "char_default_a");
+  expect(role?.characterRig?.actionPresetId).toBe("walk-cycle");
+  expect(state.cameraMotionPlaying).toBe(true);
+  expect(state.cameraMotionProgress).toBe(0);
+});

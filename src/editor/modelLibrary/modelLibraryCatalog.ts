@@ -1,4 +1,9 @@
-export type ModelLibraryCategoryId = "convenience" | "home" | "outdoor" | "tools" | "my-models";
+import guoCharactersManifest from "./guoCharactersManifest.json";
+import guoPropsManifest from "./guoPropsManifest.json";
+
+export const LOCAL_GUO_ASSETS_AVAILABLE = __LOCAL_GUO_ASSETS_AVAILABLE__;
+
+export type ModelLibraryCategoryId = "characters" | "convenience" | "home" | "outdoor" | "tools" | "weapons" | "my-models";
 
 export type ModelLibraryCategory = {
   directoryName: string;
@@ -13,22 +18,27 @@ export type ModelLibraryItem = {
   name: string;
   thumbUrl?: string;
   url: string;
+  kind?: "character" | "prop";
 };
 
 export const MODEL_LIBRARY_CATEGORIES: ModelLibraryCategory[] = [
+  ...(LOCAL_GUO_ASSETS_AVAILABLE ? [{ id: "characters" as const, label: "人物", directoryName: "人物" }] : []),
   { id: "convenience", label: "便利生活", directoryName: "便利生活" },
   { id: "home", label: "居家生活", directoryName: "生活家居" },
   { id: "outdoor", label: "户外出行", directoryName: "户外出行" },
   { id: "tools", label: "工具配件", directoryName: "工具配件" },
+  ...(LOCAL_GUO_ASSETS_AVAILABLE ? [{ id: "weapons" as const, label: "武器", directoryName: "武器" }] : []),
   { id: "my-models", label: "我的模型", directoryName: "" },
 ];
 
 function createBuiltInThumbnail(name: string, categoryId: ModelLibraryCategoryId) {
   const colors: Record<ModelLibraryCategoryId, [string, string]> = {
+    characters: ["#38506b", "#8cc7eb"],
     convenience: ["#295b78", "#59b7da"],
     home: ["#6d4d3d", "#d49a6a"],
     outdoor: ["#315c49", "#72bd83"],
     tools: ["#62522f", "#d1aa50"],
+    weapons: ["#5c3b40", "#d08a92"],
     "my-models": ["#4d5561", "#98a2b3"],
   };
   const [background, accent] = colors[categoryId];
@@ -65,8 +75,54 @@ export const BUILTIN_LIFE_MODELS: ModelLibraryItem[] = BUILTIN_LIFE_MODEL_INPUTS
   thumbUrl: createBuiltInThumbnail(item.name, item.categoryId),
 }));
 
+type GuoCharacterManifestItem = {
+  id: string;
+  label: string;
+  localModelPath: string;
+  localThumbnailPath: string;
+};
+
+type GuoPropManifestItem = {
+  id: string;
+  label: string;
+  categoryId: string;
+  localModelPath: string;
+  localThumbnailPath: string;
+};
+
+const localAssetUrl = (path: string) => `${import.meta.env.BASE_URL}local-assets/guo-3d-assets/${path}`;
+
+export const GUO_CHARACTER_MODELS: ModelLibraryItem[] = (guoCharactersManifest.items as GuoCharacterManifestItem[]).map((item) => ({
+  id: `guo-character:${item.id}`,
+  kind: "character",
+  categoryId: "characters",
+  fileName: item.localModelPath.split("/").pop() ?? `${item.id}.fbx`,
+  name: item.label,
+  url: localAssetUrl(`guo-skeleton-models/${item.localModelPath}`),
+  thumbUrl: localAssetUrl(`guo-skeleton-models/${item.localThumbnailPath}`),
+}));
+
+function mapGuoPropCategory(categoryId: string): ModelLibraryCategoryId {
+  if (categoryId === "furniture") return "home";
+  if (categoryId === "vehicle" || categoryId === "environment") return "outdoor";
+  if (categoryId === "firearms" || categoryId === "melee") return "weapons";
+  if (categoryId === "accessory") return "convenience";
+  return "tools";
+}
+
+export const GUO_PROP_MODELS: ModelLibraryItem[] = (guoPropsManifest.items as GuoPropManifestItem[]).map((item) => ({
+  id: `guo-prop:${item.id}`,
+  kind: "prop",
+  categoryId: mapGuoPropCategory(item.categoryId),
+  fileName: item.localModelPath.split("/").pop() ?? `${item.id}.fbx`,
+  name: item.label,
+  url: localAssetUrl(`guo-mounted-props-200/${item.localModelPath}`),
+  thumbUrl: localAssetUrl(`guo-mounted-props-200/${item.localThumbnailPath}`),
+}));
+
 export function getModelLibraryItems() {
-  return [...BUILTIN_LIFE_MODELS].sort((a, b) => {
+  const localModels = LOCAL_GUO_ASSETS_AVAILABLE ? [...GUO_CHARACTER_MODELS, ...GUO_PROP_MODELS] : [];
+  return [...localModels, ...BUILTIN_LIFE_MODELS].sort((a, b) => {
     const categoryIndexA = MODEL_LIBRARY_CATEGORIES.findIndex((category) => category.id === a.categoryId);
     const categoryIndexB = MODEL_LIBRARY_CATEGORIES.findIndex((category) => category.id === b.categoryId);
 

@@ -660,7 +660,9 @@ export function DirectorCanvas() {
     [activeCamera]
   );
   const hasObjectMotion = useMemo(
-    () => sceneObjects.some((item) => (item.motionPath?.keyframes?.length ?? 0) >= 2),
+    () => sceneObjects.some((item) =>
+      (item.motionPath?.keyframes?.length ?? 0) >= 2 || Boolean(item.characterRig?.actionPresetId)
+    ),
     [sceneObjects]
   );
   const hasPlayableMotion = (activeCameraMotionPath?.keyframes.length ?? 0) >= 2 || hasObjectMotion;

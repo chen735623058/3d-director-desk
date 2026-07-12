@@ -53,7 +53,7 @@ export function ObjectMotionTransport() {
     ? normalizeObjectMotionPath(selectedObject.motionPath, selectedObject.transform).keyframes
     : [];
   const hasPlayableObjectMotion = objects.some(
-    (object) => (object.motionPath?.keyframes?.length ?? 0) >= 2
+    (object) => (object.motionPath?.keyframes?.length ?? 0) >= 2 || Boolean(object.characterRig?.actionPresetId)
   );
   const currentKeyframe = keyframes.find(
     (keyframe) => Math.abs(keyframe.time - progress) <= CURRENT_KEYFRAME_TOLERANCE

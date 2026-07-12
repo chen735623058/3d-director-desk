@@ -3,6 +3,8 @@ dist
 .DS_Store
 .vercel
 coverage
+.local-assets
+public/local-assets
 *.log
 npm-debug.log*
 .env

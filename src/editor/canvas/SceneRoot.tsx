@@ -26,6 +26,7 @@ import { VIEWPORT_OBJECT_LABEL_VERTICAL_GAP } from "../schema/viewportLabels";
 import type { TransformMode } from "../store/directorStore";
 import { useDirectorStore } from "../store/directorStore";
 import { CharacterModel } from "../runtime/CharacterModel";
+import { sampleCharacterActionControls } from "../presets/characterActionPresets";
 import { getGroundedLabelY } from "../runtime/mannequin/bodyTypes";
 import { getUE4GroundedLabelY } from "../runtime/ue4Mannequin/ue4MannequinRig";
 import { getEffectiveGroundOpacity } from "./panoramaMath";
@@ -460,6 +461,7 @@ function ObjectSceneNode({
   onSelect,
   motionPhase = 0,
   motionWalking = false,
+  motionTimeSeconds = 0,
 }: {
   asset?: DirectorAssetRef;
   item: DirectorObject;
@@ -471,6 +473,7 @@ function ObjectSceneNode({
   onSelect?: (item: DirectorObject) => void;
   motionPhase?: number;
   motionWalking?: boolean;
+  motionTimeSeconds?: number;
 }) {
   const groupRef = useRef<Group>(null!);
   const [measuredCharacterLabel, setMeasuredCharacterLabel] = useState<{
@@ -493,7 +496,18 @@ function ObjectSceneNode({
   const focusOffsetY = item.kind === "character" ? Math.max(0.8, characterLabelY * 0.58) : 0.75;
   const pilotTargetState = pilotLockedTargetId === item.id ? "locked" : pilotHoveredTargetId === item.id ? "hovered" : null;
   const animatedCharacterRig = useMemo(() => {
-    if (!motionWalking || !item.characterRig) return item.characterRig;
+    if (!item.characterRig) return item.characterRig;
+    if (item.characterRig.actionPresetId) {
+      return {
+        ...item.characterRig,
+        controls: sampleCharacterActionControls(
+          item.characterRig.actionPresetId,
+          motionTimeSeconds,
+          item.characterRig.controls
+        ),
+      };
+    }
+    if (!motionWalking) return item.characterRig;
     const stride = Math.sin(motionPhase) * 28;
     const leftKnee = Math.max(0, Math.sin(motionPhase + Math.PI / 2)) * 24;
     const rightKnee = Math.max(0, Math.sin(motionPhase - Math.PI / 2)) * 24;
@@ -511,7 +525,7 @@ function ObjectSceneNode({
         "rightKnee.bend": rightKnee,
       },
     };
-  }, [item.characterRig, motionPhase, motionWalking]);
+  }, [item.characterRig, motionPhase, motionTimeSeconds, motionWalking]);
   const handleCharacterLabelAnchorYChange = useCallback(
     (anchorY: number) => {
       setMeasuredCharacterLabel((current) => {
@@ -569,14 +583,11 @@ function ObjectSceneNode({
           </ViewportObjectLabel>
         </group>
       ) : null}
-      {isImportedModel && asset ? (
-        <Suspense fallback={null}>
-          <ImportedModel fileName={asset.fileName} url={asset.url} />
-        </Suspense>
-      ) : item.kind === "character" ? (
+      {item.kind === "character" ? (
         <>
           <Suspense fallback={null}>
             <CharacterModel
+              assetUrl={isImportedModel ? asset?.url : undefined}
               bodyType={item.bodyType}
               color={item.color}
               motionWalking={motionWalking}
@@ -588,6 +599,10 @@ function ObjectSceneNode({
             <ViewportObjectLabel position={[0, characterLabelY, 0]}>{item.name}</ViewportObjectLabel>
           ) : null}
         </>
+      ) : isImportedModel && asset ? (
+        <Suspense fallback={null}>
+          <ImportedModel fileName={asset.fileName} url={asset.url} />
+        </Suspense>
       ) : item.kind === "prop" && item.geometryType ? (
         <GeometryPrimitiveModel color={item.color} geometryType={item.geometryType} />
       ) : null}
@@ -1165,6 +1180,7 @@ export function SceneRoot() {
               asset={asset}
               item={renderedItem}
               motionPhase={cameraMotionProgress * activeMotionDuration * 7.2}
+              motionTimeSeconds={cameraMotionProgress * activeMotionDuration}
               motionWalking={motionWalking}
               selected={item.crowdId ? false : item.id === selectedObjectId}
               showLabels={scene.showLabels && cameraPilotMode === "idle"}

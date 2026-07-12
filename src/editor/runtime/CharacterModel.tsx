@@ -3,6 +3,7 @@ import type { CharacterRigState } from "../schema/directorProject";
 import { PrimitiveMannequin } from "./PrimitiveMannequin";
 import { UE4MannequinModel } from "./UE4MannequinModel";
 import type { CharacterBodyType } from "./mannequin/bodyTypes";
+import { MixamoCharacterModel } from "./MixamoCharacterModel";
 
 interface CharacterModelProps {
   bodyType?: CharacterBodyType;
@@ -11,6 +12,7 @@ interface CharacterModelProps {
   rigState?: CharacterRigState;
   /** Signals that the parent has applied an automatic locomotion pose. */
   motionWalking?: boolean;
+  assetUrl?: string;
 }
 
 class CharacterModelBoundary extends Component<
@@ -33,8 +35,16 @@ class CharacterModelBoundary extends Component<
   }
 }
 
-export function CharacterModel({ bodyType, color, onLabelAnchorYChange, rigState }: CharacterModelProps) {
+export function CharacterModel({ assetUrl, bodyType, color, onLabelAnchorYChange, rigState }: CharacterModelProps) {
   const fallback = <PrimitiveMannequin bodyType={bodyType} color={color} rigState={rigState} />;
+
+  if (assetUrl && rigState?.rigType === "mixamo") {
+    return (
+      <CharacterModelBoundary fallback={fallback}>
+        <MixamoCharacterModel url={assetUrl} onLabelAnchorYChange={onLabelAnchorYChange} rigState={rigState} />
+      </CharacterModelBoundary>
+    );
+  }
 
   if (rigState?.rigType !== "ue4-mannequin") {
     return fallback;

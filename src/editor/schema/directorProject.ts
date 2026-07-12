@@ -50,6 +50,7 @@ export interface SceneSettings {
 export interface CharacterRigState {
   rigType: CharacterRigType;
   posePresetId: string | null;
+  actionPresetId?: string | null;
   controls: Record<string, number>;
 }
 

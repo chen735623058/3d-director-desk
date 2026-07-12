@@ -375,7 +375,7 @@ export function ViewportToolbar({
 
   function addModelLibraryItem(item: ModelLibraryItem) {
     addImportedAsset({
-      kind: "prop",
+      kind: item.kind ?? "prop",
       assetSource: "library",
       fileName: item.fileName,
       name: item.name,
