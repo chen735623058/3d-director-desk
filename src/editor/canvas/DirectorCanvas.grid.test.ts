@@ -17,16 +17,12 @@ function expectTupleToBeCloseTo(
   });
 }
 
-it("keeps the viewport grid visible when there is no panorama background", () => {
-  expect(shouldRenderViewportGrid(false, false)).toBe(true);
+it("shows the viewport grid when the independent display switch is enabled", () => {
+  expect(shouldRenderViewportGrid(true)).toBe(true);
 });
 
-it("keeps the viewport grid visible when a panorama background is active", () => {
-  expect(shouldRenderViewportGrid(true, false)).toBe(true);
-});
-
-it("keeps the viewport grid visible when snap to grid is enabled during a panorama background", () => {
-  expect(shouldRenderViewportGrid(true, true)).toBe(true);
+it("hides the viewport grid without changing snap behavior", () => {
+  expect(shouldRenderViewportGrid(false)).toBe(false);
 });
 
 it("starts the director and default camera view from a centered front composition", () => {

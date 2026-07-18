@@ -18,7 +18,7 @@ export function PilotHud({
     ? `掌镜准星，已锁定${lockedTargetName}`
     : pointedTargetName
       ? `掌镜准星，当前对准${pointedTargetName}`
-      : "掌镜准星，当前没有对准可锁定物体";
+      : "掌镜准星，按 F 锁定当前空间点";
 
   return (
     <div className="pilot-hud" aria-label="第一人称掌镜控制层">
@@ -38,14 +38,19 @@ export function PilotHud({
             <Crosshair aria-hidden="true" size={13} />
             {lockedTargetName ? `已锁定：${targetName}` : `${targetName} · 按 F 锁定`}
           </span>
-        ) : null}
+        ) : (
+          <span className="pilot-target-name">
+            <Crosshair aria-hidden="true" size={13} />
+            空白空间 · 按 F 锁定
+          </span>
+        )}
       </div>
 
       <div className="pilot-keyboard-help" aria-label="掌镜快捷键">
         <span><kbd>W A S D</kbd> 移动</span>
         <span><kbd>E</kbd> 上升 · <kbd>Q</kbd> 下降</span>
         <span><kbd>空格</kbd> 播放/暂停</span>
-        <span><kbd>F</kbd> 锁定主体</span>
+        <span><kbd>F</kbd> 锁定主体 / 空间点</span>
         <span><kbd>滚轮</kbd> 调整远近</span>
       </div>
 

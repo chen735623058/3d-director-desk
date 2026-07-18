@@ -233,6 +233,12 @@ vi.mock("./SceneRoot", () => ({
   SceneRoot: () => null,
 }));
 
+vi.mock("./ViewportBackground", () => ({
+  ViewportBackground: ({ panoramaAsset }: { panoramaAsset?: { id: string } | null }) => (
+    <div data-panorama-asset-id={panoramaAsset?.id ?? "none"} data-testid="viewport-background" />
+  ),
+}));
+
 import App from "../../App";
 import { createInitialDirectorState, useDirectorStore } from "../store/directorStore";
 
@@ -245,6 +251,23 @@ it("renders a live R3F viewport and director scene controls", () => {
   expect(screen.getByText("背景")).toBeInTheDocument();
   expect(screen.getByLabelText("天空颜色 HEX")).toBeInTheDocument();
   expect(screen.getByTestId("orbit-controls")).toHaveAttribute("data-enabled", "true");
+});
+
+it("passes the active panorama to the interactive viewport", () => {
+  useDirectorStore.getState().setPanoramaAsset({
+    name: "测试全景",
+    fileName: "panorama.jpg",
+    url: "data:image/jpeg;base64,panorama",
+    projectionMode: "equirectangular",
+  });
+  const panoramaAssetId = useDirectorStore.getState().project.panoramaAssetId;
+
+  render(<App />);
+
+  expect(screen.getByTestId("viewport-background")).toHaveAttribute(
+    "data-panorama-asset-id",
+    panoramaAssetId
+  );
 });
 
 it("keeps orbit controls available when a transformable object is selected but no handle is being dragged", () => {
@@ -271,6 +294,21 @@ it("applies the user-adjusted rotate and zoom sensitivity to orbit controls", ()
   expect(screen.getByTestId("orbit-controls")).toHaveAttribute("data-zoom-speed", "0.65");
 });
 
+it("applies sensitivity changes from the visible settings panel to orbit controls immediately", () => {
+  render(<App />);
+
+  fireEvent.click(screen.getByRole("button", { name: "视角手感" }));
+  fireEvent.change(screen.getByRole("slider", { name: "转动视角灵敏度" }), {
+    target: { value: "125" },
+  });
+  fireEvent.change(screen.getByRole("slider", { name: "缩放视角灵敏度" }), {
+    target: { value: "110" },
+  });
+
+  expect(screen.getByTestId("orbit-controls")).toHaveAttribute("data-rotate-speed", "1.25");
+  expect(screen.getByTestId("orbit-controls")).toHaveAttribute("data-zoom-speed", "1.1");
+});
+
 it("does not render a full-viewport transform drag layer over the 3D viewport", () => {
   useDirectorStore.setState({
     ...useDirectorStore.getState(),
@@ -292,6 +330,32 @@ it("renders only the dark major viewport grid lines", () => {
   expect(screen.getByTestId("viewport-grid")).toHaveAttribute("data-section-color", "#2A4065");
   expect(screen.getByTestId("viewport-grid")).toHaveAttribute("data-fade-distance", "80");
   expect(screen.getByTestId("viewport-grid")).toHaveAttribute("data-infinite-grid", "true");
+});
+
+it("hides only the editing grid when its independent switch is disabled", () => {
+  const state = useDirectorStore.getState();
+  useDirectorStore.setState({
+    ...state,
+    project: {
+      ...state.project,
+      scene: {
+        ...state.project.scene,
+        showGrid: false,
+        snapToGrid: true,
+        showGround: true,
+        pathCollisionEnabled: true,
+      },
+    },
+  });
+
+  render(<App />);
+
+  expect(screen.queryByTestId("viewport-grid")).not.toBeInTheDocument();
+  expect(useDirectorStore.getState().project.scene).toMatchObject({
+    snapToGrid: true,
+    showGround: true,
+    pathCollisionEnabled: true,
+  });
 });
 
 it("keeps the viewport grid slightly above the configured ground plane", () => {
@@ -749,6 +813,50 @@ it("keeps the finished-shot monitor mounted while paused for timeline scrubbing"
   expect(screen.getByLabelText("拖动监看窗口")).toBeInTheDocument();
   expect(screen.getByRole("slider", { name: "看成片 FOV" })).toHaveValue("46");
   expect(screen.getByRole("slider", { name: "小窗 FOV" })).toHaveValue("46");
+});
+
+it("passes the active panorama to both the main viewport and finished-shot monitor", () => {
+  const state = useDirectorStore.getState();
+  const panoramaAsset = {
+    id: "panorama_monitor",
+    kind: "panorama" as const,
+    sourceType: "image" as const,
+    fileName: "monitor.jpg",
+    name: "监看全景",
+    url: "data:image/jpeg;base64,panorama",
+    projectionMode: "equirectangular" as const,
+  };
+  useDirectorStore.setState({
+    ...state,
+    viewMode: "director",
+    motionStudioOpen: true,
+    project: {
+      ...state.project,
+      assets: [...state.project.assets, panoramaAsset],
+      panoramaAssetId: panoramaAsset.id,
+      cameras: state.project.cameras.map((camera) => ({
+        ...camera,
+        motionPath: {
+          duration: 6,
+          loop: false,
+          interpolation: "linear" as const,
+          easing: "linear" as const,
+          keyframes: [
+            { id: "panorama_1", time: 0, position: [0, 2, 8] as [number, number, number], target: [0, 1, 0] as [number, number, number], fov: 50 },
+            { id: "panorama_2", time: 1, position: [4, 2, 4] as [number, number, number], target: [0, 1, 0] as [number, number, number], fov: 42 },
+          ],
+        },
+      })),
+    },
+  });
+
+  render(<App />);
+
+  const backgrounds = screen.getAllByTestId("viewport-background");
+  expect(backgrounds).toHaveLength(2);
+  backgrounds.forEach((background) => {
+    expect(background).toHaveAttribute("data-panorama-asset-id", panoramaAsset.id);
+  });
 });
 
 it("keeps finished-shot and monitor FOV controls independent", () => {

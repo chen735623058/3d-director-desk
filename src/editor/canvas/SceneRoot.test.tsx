@@ -128,15 +128,23 @@ vi.mock("../runtime/CharacterModel", async () => {
     CharacterModel: ({
       bodyType,
       color,
+      actionPresetId,
+      animationTimeSeconds,
       onLabelAnchorYChange,
       motionWalking,
+      externalAnimation,
       rigState,
+      runtimeMotion,
     }: {
       bodyType?: string;
       color?: string;
+      actionPresetId?: string | null;
+      animationTimeSeconds?: number;
       onLabelAnchorYChange?: (anchorY: number) => void;
       motionWalking?: boolean;
+      externalAnimation?: { url: string; clipName: string } | null;
       rigState?: { rigType?: string };
+      runtimeMotion?: { duration: number };
     }) => {
       if (mockCharacterModelShouldSuspend.current) {
         throw new Promise(() => undefined);
@@ -152,8 +160,13 @@ vi.mock("../runtime/CharacterModel", async () => {
         <div
           data-body-type={bodyType}
           data-color={color}
+          data-action-preset-id={actionPresetId ?? ""}
+          data-animation-time={animationTimeSeconds}
           data-motion-walking={motionWalking ? "true" : "false"}
+          data-external-animation-url={externalAnimation?.url}
+          data-external-clip-name={externalAnimation?.clipName}
           data-rig-type={rigState?.rigType}
+          data-runtime-duration={runtimeMotion?.duration}
           data-testid="mock-character-model"
         />
       );
@@ -163,6 +176,7 @@ vi.mock("../runtime/CharacterModel", async () => {
 
 beforeEach(() => {
   vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(() => null);
   mockCharacterModelShouldSuspend.current = false;
   const base = createInitialDirectorState();
   useDirectorStore.setState({
@@ -171,6 +185,7 @@ beforeEach(() => {
     selectedCameraKeyframeId: null,
     cameraMotionProgress: 0,
     cameraMotionPlaying: false,
+    characterActionPreview: null,
     cameraPilotMode: "idle",
     cameraPilotHoveredTargetId: null,
     cameraPilotLockedTargetId: null,
@@ -423,11 +438,34 @@ it("shows the first object motion keyframe at exact zero instead of the object's
 
 it("uses the requested dark ground surface color", () => {
   const { container } = render(<SceneRoot />);
-  const groundMaterial = container.querySelector('meshbasicmaterial[color="#303640"]');
+  const groundMaterial = container.querySelector('meshstandardmaterial[color="#5b6068"]');
 
   expect(groundMaterial).toBeInTheDocument();
+  expect(groundMaterial).toHaveAttribute("roughness", "0.72");
+  expect(groundMaterial).toHaveAttribute("metalness", "0.04");
   expect(groundMaterial?.outerHTML.toLowerCase()).toContain("polygonoffsetfactor=\"1\"");
   expect(groundMaterial?.outerHTML.toLowerCase()).toContain("polygonoffsetunits=\"1\"");
+});
+
+it("applies the selected ground material preset", () => {
+  const state = useDirectorStore.getState();
+  useDirectorStore.setState({
+    ...state,
+    project: {
+      ...state.project,
+      scene: {
+        ...state.project.scene,
+        groundMaterialPreset: "grass",
+      },
+    },
+  });
+
+  const { container } = render(<SceneRoot />);
+  const groundMaterial = container.querySelector('meshstandardmaterial[color="#45683b"]');
+
+  expect(groundMaterial).toBeInTheDocument();
+  expect(groundMaterial).toHaveAttribute("roughness", "1");
+  expect(groundMaterial).toHaveAttribute("metalness", "0");
 });
 
 it("renders added geometry primitives as light blue-white models", () => {
@@ -653,6 +691,8 @@ it("renders visible character route points and selects their character without c
   expect(routeLine).toHaveAttribute("data-point-count", "96");
   expect(container.querySelector('mesh[name="char_default_a_motion_key_1-character-route-handle"]')).toBeInTheDocument();
   expect(container.querySelector('mesh[name="char_default_a_motion_key_2-character-route-handle"]')).toBeInTheDocument();
+  expect(container.querySelectorAll('mesh[name$="-character-route-ring"]')).toHaveLength(2);
+  expect(container.querySelectorAll('mesh[name$="-character-route-ring-glow"]')).toHaveLength(2);
 
   useDirectorStore.getState().setCameraMotionProgress(0.35);
   fireEvent.click(container.querySelector('mesh[name="char_default_a_motion_key_2-character-route-handle"]')!);
@@ -830,4 +870,109 @@ it("uses the built-in UE4 mannequin rig for default generated characters", () =>
   render(<SceneRoot />);
 
   expect(screen.getByTestId("mock-character-model")).toHaveAttribute("data-rig-type", "ue4-mannequin");
+});
+
+it("passes a static character action and shared runtime duration into the character model", () => {
+  const state = createInitialDirectorState();
+  useDirectorStore.setState({
+    ...state,
+    project: {
+      ...state.project,
+      cameras: state.project.cameras.map((camera) => ({
+        ...camera,
+        motionPath: { ...camera.motionPath!, duration: 3.7 },
+      })),
+      objects: state.project.objects.map((item) => item.id === "char_default_a"
+        ? {
+            ...item,
+            characterRig: {
+              rigType: "mixamo" as const,
+              posePresetId: "stand",
+              actionPresetId: "wave-cycle",
+              controls: {},
+            },
+          }
+        : item),
+    },
+  });
+
+  render(<SceneRoot renderMode="clean-camera" />);
+
+  expect(screen.getByTestId("mock-character-model")).toHaveAttribute("data-action-preset-id", "wave-cycle");
+  expect(screen.getByTestId("mock-character-model")).toHaveAttribute("data-animation-time", "0");
+  expect(screen.getByTestId("mock-character-model")).toHaveAttribute("data-runtime-duration", "3.7");
+});
+
+it("uses a non-persistent import preview action across SceneRoot render modes", () => {
+  const state = createInitialDirectorState();
+  useDirectorStore.setState({
+    ...state,
+    characterActionPreview: { objectId: "char_default_a", actionPresetId: "jump-cycle" },
+    project: {
+      ...state.project,
+      objects: state.project.objects.map((item) => item.id === "char_default_a"
+        ? {
+            ...item,
+            characterRig: {
+              rigType: "mixamo" as const,
+              posePresetId: "stand",
+              actionPresetId: "wave-cycle",
+              controls: {},
+            },
+          }
+        : item),
+    },
+  });
+
+  render(<SceneRoot renderMode="clean-camera" />);
+
+  expect(screen.getByTestId("mock-character-model")).toHaveAttribute("data-action-preset-id", "jump-cycle");
+  expect(useDirectorStore.getState().project.objects.find((item) => item.id === "char_default_a")?.characterRig?.actionPresetId)
+    .toBe("wave-cycle");
+});
+
+it("resolves an imported action id into its independent animation file and clip", () => {
+  const state = createInitialDirectorState();
+  useDirectorStore.setState({
+    ...state,
+    project: {
+      ...state.project,
+      assets: [{
+        id: "asset_actor",
+        kind: "character",
+        sourceType: "model",
+        fileName: "actor.fbx",
+        url: "/characters/actor.fbx",
+        modelFormat: "fbx",
+        characterRigProfile: "mixamo",
+        characterImportReadiness: "ready",
+      }],
+      animationAssets: [{
+        id: "animation_walk",
+        name: "走路",
+        fileName: "walk.fbx",
+        url: "/animations/walk.fbx",
+        modelFormat: "fbx",
+        rigProfile: "mixamo",
+        clips: [{ id: "clip_1", name: "Walk", duration: 1.1, trackCount: 52 }],
+      }],
+      objects: state.project.objects.map((item) => item.id === "char_default_a"
+        ? {
+            ...item,
+            assetRefId: "asset_actor",
+            characterRig: {
+              rigType: "mixamo" as const,
+              posePresetId: "stand",
+              actionPresetId: "imported-action:animation_walk:clip_1",
+              controls: {},
+            },
+          }
+        : item),
+    },
+  });
+
+  render(<SceneRoot />);
+
+  expect(screen.getByTestId("mock-character-model")).toHaveAttribute("data-external-animation-url", "/animations/walk.fbx");
+  expect(screen.getByTestId("mock-character-model")).toHaveAttribute("data-external-clip-name", "Walk");
 });

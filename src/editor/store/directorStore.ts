@@ -7,6 +7,8 @@ import type {
   CharacterBodyType,
   DirectorAssetKind,
   DirectorCameraCapture,
+  DirectorAnimationAssetRef,
+  DirectorAnimationClipRef,
   DirectorCameraMotionKeyframe,
   DirectorCameraMotionPath,
   DirectorCameraShot,
@@ -16,6 +18,10 @@ import type {
   DirectorProject,
   DirectorTransform,
   GeometryPrimitiveType,
+  GroundMaterialPresetId,
+  DirectorModelFormat,
+  CharacterImportReadiness,
+  CharacterRigProfile,
   PanoramaProjectionMode,
   SceneSettings,
   ViewMode,
@@ -41,6 +47,9 @@ import {
   DEFAULT_VIEWPORT_ZOOM_SENSITIVITY,
   normalizeViewportSensitivity,
 } from "../schema/viewportSensitivity";
+import { parseImportedCharacterActionId } from "../schema/importedCharacterAction";
+import { normalizePerformanceProfileId, type PerformanceProfileId } from "../performance/performanceProfiles";
+import { getRuntimePlaybackProgress, setRuntimePlaybackProgress } from "../runtime/playbackRuntime";
 
 export type TransformMode = "translate" | "rotate" | "scale";
 export type CameraPilotMode = "idle" | "pilot";
@@ -53,6 +62,34 @@ export interface ImportedAssetInput {
   addToScene?: boolean;
   assetSource?: DirectorAssetSource;
   projectionMode?: PanoramaProjectionMode;
+  modelFormat?: DirectorModelFormat;
+  storageKey?: string;
+  byteLength?: number;
+  characterRigProfile?: CharacterRigProfile;
+  characterImportReadiness?: CharacterImportReadiness;
+  characterOrientationCorrection?: [number, number, number];
+  characterBoneMap?: DirectorAssetRef["characterBoneMap"];
+}
+
+export interface ImportedAnimationAssetInput {
+  name: string;
+  fileName: string;
+  url: string;
+  modelFormat: "fbx" | "glb";
+  storageKey?: string;
+  byteLength?: number;
+  rigProfile: CharacterRigProfile;
+  sourceCharacterAssetId?: string;
+  clips: DirectorAnimationClipRef[];
+}
+
+export interface PanoramaAssetInput {
+  name: string;
+  fileName: string;
+  url: string;
+  projectionMode: PanoramaProjectionMode;
+  storageKey?: string;
+  byteLength?: number;
 }
 
 export interface CameraShotSnapshot {
@@ -90,6 +127,7 @@ export interface DirectorUiState {
   finishedShotFov: number | null;
   motionMonitorFov: number | null;
   motionStudioOpen: boolean;
+  performanceProfile: PerformanceProfileId;
 }
 
 export interface DirectorState extends DirectorUiState {
@@ -113,10 +151,13 @@ interface DirectorInternalState {
   selectedObjectMotionKeyframeId: string | null;
   cameraMotionProgress: number;
   cameraMotionPlaying: boolean;
+  cameraMotionPlaybackRevision: number;
+  characterActionPreview: { objectId: string; actionPresetId: string } | null;
   cameraPilotMode: CameraPilotMode;
   cameraPilotEditKeyframeId: string | null;
   cameraPilotHoveredTargetId: string | null;
   cameraPilotLockedTargetId: string | null;
+  cameraPilotLockedPoint: [number, number, number] | null;
   cameraPilotFollowTarget: boolean;
 }
 
@@ -128,6 +169,7 @@ export interface DirectorActions {
   setViewportRotateSensitivity: (sensitivity: number) => void;
   setViewportZoomSensitivity: (sensitivity: number) => void;
   resetViewportSensitivity: () => void;
+  setPerformanceProfile: (profile: PerformanceProfileId) => void;
   toggleViewportPanelsCollapsed: () => void;
   setViewportPanelsCollapsed: (collapsed: boolean) => void;
   setShowCharacterRoutes: (visible: boolean) => void;
@@ -139,6 +181,7 @@ export interface DirectorActions {
   openSceneInspector: () => void;
   updateScene: (patch: Partial<SceneSettings>) => void;
   removePanoramaAsset: () => void;
+  setPanoramaAsset: (input: PanoramaAssetInput) => void;
   removeImportedAsset: (assetId: string) => void;
   updateObjectTransform: (id: string, patch: Partial<DirectorTransform>) => void;
   addCharacterRoutePoint: (characterId: string) => string | null;
@@ -161,6 +204,8 @@ export interface DirectorActions {
   updateUniformScale: (id: string, scale: number) => void;
   updateCrowdUniformScale: (crowdId: string, scale: number) => void;
   addImportedAsset: (input: ImportedAssetInput) => void;
+  addImportedAnimationAsset: (input: ImportedAnimationAssetInput) => string;
+  removeImportedAnimationAsset: (assetId: string) => void;
   addObjectFromAsset: (assetId: string) => string | null;
   addPresetCharacter: (bodyType?: CharacterBodyType) => void;
   addCrowdCharacters: (input: CrowdCharactersInput) => string[];
@@ -214,11 +259,14 @@ export interface DirectorActions {
   updateCameraMotionPath: (cameraId: string, patch: Partial<DirectorCameraMotionPath>) => void;
   setCameraMotionProgress: (progress: number) => void;
   setCameraMotionPlaying: (playing: boolean) => void;
+  restartCameraMotionPlayback: () => void;
+  setCharacterActionPreview: (preview: { objectId: string; actionPresetId: string } | null) => void;
   setMotionStudioOpen: (open: boolean) => void;
   startCameraPilot: (mode?: Exclude<CameraPilotMode, "idle">, editKeyframeId?: string | null) => void;
   stopCameraPilot: () => void;
   setCameraPilotHoveredTarget: (objectId: string | null) => void;
   setCameraPilotLockedTarget: (objectId: string | null) => void;
+  setCameraPilotLockedPoint: (point: [number, number, number] | null) => void;
   setCameraPilotFollowTarget: (follow: boolean) => void;
   beginUndoBatch: () => void;
   endUndoBatch: () => void;
@@ -245,7 +293,10 @@ const DEFAULT_SCENE: SceneSettings = {
   panoramaRadius: 60,
   showLabels: true,
   snapToGrid: false,
+  showGrid: true,
   showGround: true,
+  groundMaterialPreset: "studio" as GroundMaterialPresetId,
+  groundTextureScale: 1,
   groundColor: "#303640",
   groundBrightness: 1,
   groundOpacity: 0.4,
@@ -286,6 +337,7 @@ const DEFAULT_UI_STATE: DirectorUiState = {
   finishedShotFov: null,
   motionMonitorFov: null,
   motionStudioOpen: false,
+  performanceProfile: "auto",
 };
 
 function normalizeDirectorScenePersistenceScopeId(scopeId: string | null | undefined) {
@@ -438,16 +490,6 @@ function withPersistedLocalAssets(project: DirectorProject, includePersistedLoca
   };
 }
 
-function removePanoramaFromProject(project: DirectorProject): DirectorProject {
-  const panoramaAssetId = project.panoramaAssetId;
-
-  return {
-    ...project,
-    assets: project.assets.filter((asset) => asset.kind !== "panorama" && asset.id !== panoramaAssetId),
-    panoramaAssetId: null,
-  };
-}
-
 function normalizeSceneSettings(scene: SceneSettings): SceneSettings {
   return {
     ...DEFAULT_SCENE,
@@ -457,29 +499,42 @@ function normalizeSceneSettings(scene: SceneSettings): SceneSettings {
     backgroundColor: typeof scene.backgroundColor === "string" ? scene.backgroundColor : DEFAULT_SCENE.backgroundColor,
     backgroundBrightness:
       typeof scene.backgroundBrightness === "number" ? scene.backgroundBrightness : DEFAULT_SCENE.backgroundBrightness,
+    showGrid: typeof scene.showGrid === "boolean" ? scene.showGrid : DEFAULT_SCENE.showGrid,
+    groundMaterialPreset:
+      scene.groundMaterialPreset === "concrete"
+      || scene.groundMaterialPreset === "asphalt"
+      || scene.groundMaterialPreset === "wood"
+      || scene.groundMaterialPreset === "grass"
+        ? scene.groundMaterialPreset
+        : DEFAULT_SCENE.groundMaterialPreset,
+    groundTextureScale:
+      typeof scene.groundTextureScale === "number" && Number.isFinite(scene.groundTextureScale)
+        ? Math.min(8, Math.max(0.25, scene.groundTextureScale))
+        : DEFAULT_SCENE.groundTextureScale,
     groundColor: typeof scene.groundColor === "string" ? scene.groundColor : DEFAULT_SCENE.groundColor,
     groundBrightness: typeof scene.groundBrightness === "number" ? scene.groundBrightness : DEFAULT_SCENE.groundBrightness,
   };
 }
 
 function migrateDirectorProject(project: DirectorProject): DirectorProject {
-  const projectWithoutPanorama = removePanoramaFromProject(project);
-
   return {
-    ...projectWithoutPanorama,
-    scene: normalizeSceneSettings(projectWithoutPanorama.scene),
-    cameras: projectWithoutPanorama.cameras.map((camera) => ({
+    ...project,
+    scene: normalizeSceneSettings(project.scene),
+    animationAssets: Array.isArray(project.animationAssets)
+      ? project.animationAssets
+      : [],
+    cameras: project.cameras.map((camera) => ({
       ...camera,
       motionPath: normalizeCameraMotionPath(camera.motionPath, camera.target, camera),
     })),
-    objects: projectWithoutPanorama.objects.map((object) => {
+    objects: project.objects.map((object) => {
       const withMotionPath = object.motionPath
         ? { ...object, motionPath: normalizeObjectMotionPath(object.motionPath, object.transform) }
         : object;
       if (withMotionPath.kind !== "character") return withMotionPath;
 
       const rig = withMotionPath.characterRig;
-      if (rig?.rigType === "ue4-mannequin") return withMotionPath;
+      if (rig?.rigType === "ue4-mannequin" || rig?.rigType === "mixamo") return withMotionPath;
 
       return {
         ...withMotionPath,
@@ -510,6 +565,7 @@ function extractPersistedDirectorState(state: DirectorRuntimeState): DirectorSta
     finishedShotFov: state.finishedShotFov,
     motionMonitorFov: state.motionMonitorFov,
     motionStudioOpen: state.motionStudioOpen,
+    performanceProfile: state.performanceProfile,
     project: state.project,
   });
 }
@@ -582,6 +638,7 @@ function readPersistedDirectorState(options: DirectorStateOptions = {}): Directo
           ? Math.min(120, Math.max(10, state.motionMonitorFov))
           : null,
       motionStudioOpen: false,
+      performanceProfile: normalizePerformanceProfileId(state.performanceProfile),
       project: withPersistedLocalAssets(
         migrateDirectorProject(cloneJsonValue(state.project)),
         options.includePersistedLocalAssets
@@ -608,11 +665,14 @@ function createRuntimeStateFromPersistedState(state: DirectorState): DirectorRun
     selectedObjectMotionKeyframeId: null,
     cameraMotionProgress: 0,
     cameraMotionPlaying: false,
+    cameraMotionPlaybackRevision: 0,
+    characterActionPreview: null,
     motionStudioOpen: false,
     cameraPilotMode: "idle",
     cameraPilotEditKeyframeId: null,
     cameraPilotHoveredTargetId: null,
     cameraPilotLockedTargetId: null,
+    cameraPilotLockedPoint: null,
     cameraPilotFollowTarget: false,
   };
 }
@@ -668,6 +728,7 @@ export function createDefaultDirectorProject({
     version: 1,
     scene: DEFAULT_SCENE,
     assets: includePersistedLocalAssets ? readPersistedLocalModelAssets() : [],
+    animationAssets: [],
     objects: [role, cameraObject],
     cameras: [camera],
     activeCameraId: camera.id,
@@ -819,6 +880,10 @@ function createSceneObjectFromAsset(asset: DirectorAssetRef, existingObjects: Di
     existingObjects.length + 1
   );
 
+  const sameKindCount = existingObjects.filter((item) => item.kind === asset.kind).length;
+  const initialPosition: [number, number, number] = asset.kind === "character" && sameKindCount > 0
+    ? [getAddedModelColumnOffset(sameKindCount), 0, 0]
+    : [0, 0, 0];
   const object = {
     id: nextObjectId,
     name: asset.name ?? createDisplayNameFromFileName(asset.fileName),
@@ -826,7 +891,8 @@ function createSceneObjectFromAsset(asset: DirectorAssetRef, existingObjects: Di
     visible: true,
     locked: false,
     assetRefId: asset.id,
-    transform: createTransform([0, 0, 0]),
+    color: "#ffffff",
+    transform: createTransform(initialPosition),
   } satisfies DirectorObject;
 
   if (asset.kind !== "character") return object;
@@ -1365,6 +1431,11 @@ export const useDirectorStore = create<DirectorStore>((set, get) => {
         viewportRotateSensitivity: DEFAULT_VIEWPORT_ROTATE_SENSITIVITY,
         viewportZoomSensitivity: DEFAULT_VIEWPORT_ZOOM_SENSITIVITY,
       })),
+    setPerformanceProfile: (profile) =>
+      commitUiMutation((state) => ({
+        ...state,
+        performanceProfile: normalizePerformanceProfileId(profile),
+      })),
     toggleViewportPanelsCollapsed: () =>
       commitUiMutation((state) => ({
         ...state,
@@ -1495,6 +1566,44 @@ export const useDirectorStore = create<DirectorStore>((set, get) => {
           },
         };
       }),
+    setPanoramaAsset: (input) =>
+      commitMutation((state) => {
+        const assetId = input.storageKey
+          ? `local_panorama_${input.storageKey}`
+          : `panorama_${crypto.randomUUID()}`;
+        const panoramaAsset = {
+          id: assetId,
+          kind: "panorama",
+          sourceType: "image",
+          fileName: input.fileName,
+          name: input.name,
+          url: input.url,
+          assetSource: "local",
+          projectionMode: input.projectionMode,
+          storageKey: input.storageKey,
+          byteLength: input.byteLength,
+        } satisfies DirectorAssetRef;
+
+        return {
+          ...state,
+          directorInspectorMode: "scene",
+          selectedObjectId: null,
+          selectedObjectIds: [],
+          selectedCrowdId: null,
+          project: {
+            ...state.project,
+            scene: {
+              ...state.project.scene,
+              panoramaYaw: 0,
+            },
+            assets: [
+              ...state.project.assets.filter((asset) => asset.kind !== "panorama"),
+              panoramaAsset,
+            ],
+            panoramaAssetId: panoramaAsset.id,
+          },
+        };
+      }),
     removeImportedAsset: (assetId) =>
       commitMutation((state) => {
         const targetAsset = state.project.assets.find((item) => item.id === assetId);
@@ -1598,6 +1707,10 @@ export const useDirectorStore = create<DirectorStore>((set, get) => {
           transform,
           actionPresetId: existing?.actionPresetId ?? object.characterRig?.actionPresetId ?? null,
           facingMode: existing?.facingMode ?? (object.kind === "character" ? "path" : "manual"),
+          pointBehavior: existing?.pointBehavior ?? "pass",
+          holdSeconds: existing?.holdSeconds ?? 0,
+          holdAction: existing?.holdAction ?? "current",
+          holdActionPresetId: existing?.holdActionPresetId ?? null,
         };
         const keyframes = existing
           ? motionPath.keyframes.map((item) => item.id === existing.id ? keyframe : item)
@@ -1650,6 +1763,10 @@ export const useDirectorStore = create<DirectorStore>((set, get) => {
           },
           actionPresetId: null,
           facingMode: "path",
+          pointBehavior: "pass",
+          holdSeconds: 0,
+          holdAction: "current",
+          holdActionPresetId: null,
         };
         const keyframes = existing.length === 0
           ? [nextKeyframe]
@@ -1685,13 +1802,22 @@ export const useDirectorStore = create<DirectorStore>((set, get) => {
           motionPath.keyframes.length + 1
         );
         const time = (current.time + next.time) / 2;
-        const transform = getObjectMotionSnapshot(object, time);
+        const activeCamera = state.project.cameras.find((camera) => camera.id === state.project.activeCameraId)
+          ?? state.project.cameras[0];
+        const duration = activeCamera
+          ? normalizeCameraMotionPath(activeCamera.motionPath, activeCamera.target, activeCamera).duration
+          : DEFAULT_CAMERA_MOTION_PATH.duration;
+        const transform = getObjectMotionSnapshot(object, time, duration);
         const inserted: DirectorObjectMotionKeyframe = {
           id: insertedId,
           time,
           transform,
           actionPresetId: current.actionPresetId ?? null,
           facingMode: current.facingMode ?? "manual",
+          pointBehavior: "pass",
+          holdSeconds: 0,
+          holdAction: "current",
+          holdActionPresetId: null,
         };
         return {
           ...state,
@@ -1718,6 +1844,8 @@ export const useDirectorStore = create<DirectorStore>((set, get) => {
           objects: state.project.objects.map((object) => {
             if (object.id !== objectId) return object;
             const motionPath = normalizeObjectMotionPath(object.motionPath, object.transform);
+            const activatesNewTiming = typeof patch.time === "number"
+              || (!motionPath.speedMode && ("pointBehavior" in patch || "holdSeconds" in patch));
             const keyframes = motionPath.keyframes
               .map((keyframe) =>
                 keyframe.id === keyframeId
@@ -1726,6 +1854,18 @@ export const useDirectorStore = create<DirectorStore>((set, get) => {
                       actionPresetId:
                         "actionPresetId" in patch ? patch.actionPresetId ?? null : keyframe.actionPresetId,
                       facingMode: "facingMode" in patch ? patch.facingMode ?? "manual" : keyframe.facingMode,
+                      pointBehavior:
+                        "pointBehavior" in patch ? patch.pointBehavior ?? "pass" : keyframe.pointBehavior,
+                      holdSeconds:
+                        "holdSeconds" in patch
+                          ? Math.max(0, Number.isFinite(patch.holdSeconds) ? patch.holdSeconds ?? 0 : 0)
+                          : keyframe.holdSeconds,
+                      holdAction:
+                        "holdAction" in patch ? patch.holdAction ?? "current" : keyframe.holdAction,
+                      holdActionPresetId:
+                        "holdActionPresetId" in patch
+                          ? patch.holdActionPresetId ?? null
+                          : keyframe.holdActionPresetId,
                       time: typeof patch.time === "number" ? Math.min(1, Math.max(0, patch.time)) : keyframe.time,
                       transform: patch.transform
                         ? {
@@ -1742,6 +1882,7 @@ export const useDirectorStore = create<DirectorStore>((set, get) => {
               ...object,
               motionPath: {
                 ...motionPath,
+                ...(activatesNewTiming ? { speedMode: "custom" as const } : {}),
                 keyframes,
               },
             };
@@ -1930,11 +2071,13 @@ export const useDirectorStore = create<DirectorStore>((set, get) => {
       commitMutation((state) => {
         if (input.kind === "panorama") return state;
 
-        const assetId = getNextSequentialId(
-          state.project.assets.map((item) => item.id),
-          "asset_",
-          state.project.assets.length + 1
-        );
+        const assetId = input.storageKey
+          ? `local_asset_${input.storageKey}`
+          : getNextSequentialId(
+              state.project.assets.map((item) => item.id),
+              "asset_",
+              state.project.assets.length + 1
+            );
         const nextAsset = {
           id: assetId,
           kind: input.kind,
@@ -1944,6 +2087,13 @@ export const useDirectorStore = create<DirectorStore>((set, get) => {
           url: input.url,
           assetSource: input.assetSource ?? "local",
           projectionMode: input.projectionMode,
+          modelFormat: input.modelFormat,
+          storageKey: input.storageKey,
+          byteLength: input.byteLength,
+          characterRigProfile: input.characterRigProfile,
+          characterImportReadiness: input.characterImportReadiness,
+          characterOrientationCorrection: input.characterOrientationCorrection,
+          characterBoneMap: input.characterBoneMap,
         } satisfies DirectorAssetRef;
 
         if (input.addToScene === false) {
@@ -1970,6 +2120,78 @@ export const useDirectorStore = create<DirectorStore>((set, get) => {
             ...state.project,
             assets: [...state.project.assets, nextAsset],
             objects: [...state.project.objects, nextObject],
+          },
+        };
+      }),
+    addImportedAnimationAsset: (input) => {
+      let animationAssetId = input.storageKey
+        ? `local_animation_${input.storageKey}`
+        : `local_animation_${crypto.randomUUID()}`;
+
+      commitMutation((state) => {
+        const existing = (state.project.animationAssets ?? []).find((asset) => asset.id === animationAssetId);
+        if (existing) animationAssetId = existing.id;
+        const nextAsset = {
+          id: animationAssetId,
+          name: input.name,
+          fileName: input.fileName,
+          url: input.url,
+          modelFormat: input.modelFormat,
+          storageKey: input.storageKey,
+          byteLength: input.byteLength,
+          rigProfile: input.rigProfile,
+          sourceCharacterAssetId: input.sourceCharacterAssetId,
+          clips: input.clips,
+        } satisfies DirectorAnimationAssetRef;
+
+        return {
+          ...state,
+          project: {
+            ...state.project,
+            animationAssets: [
+              ...(state.project.animationAssets ?? []).filter((asset) => asset.id !== animationAssetId),
+              nextAsset,
+            ],
+          },
+        };
+      });
+
+      return animationAssetId;
+    },
+    removeImportedAnimationAsset: (assetId) =>
+      commitMutation((state) => {
+        if (!(state.project.animationAssets ?? []).some((asset) => asset.id === assetId)) return state;
+        const belongsToAsset = (actionId: string | null | undefined) =>
+          parseImportedCharacterActionId(actionId)?.animationAssetId === assetId;
+
+        return {
+          ...state,
+          project: {
+            ...state.project,
+            animationAssets: (state.project.animationAssets ?? []).filter((asset) => asset.id !== assetId),
+            objects: state.project.objects.map((object) => ({
+              ...object,
+              characterRig: object.characterRig
+                ? {
+                    ...object.characterRig,
+                    actionPresetId: belongsToAsset(object.characterRig.actionPresetId)
+                      ? null
+                      : object.characterRig.actionPresetId,
+                  }
+                : undefined,
+              motionPath: object.motionPath
+                ? {
+                    ...object.motionPath,
+                    keyframes: object.motionPath.keyframes.map((keyframe) => ({
+                      ...keyframe,
+                      actionPresetId: belongsToAsset(keyframe.actionPresetId) ? null : keyframe.actionPresetId,
+                      holdActionPresetId: belongsToAsset(keyframe.holdActionPresetId)
+                        ? null
+                        : keyframe.holdActionPresetId,
+                    })),
+                  }
+                : undefined,
+            })),
           },
         };
       }),
@@ -2485,6 +2707,9 @@ export const useDirectorStore = create<DirectorStore>((set, get) => {
                   ...patch,
                   transform: patch.transform ?? item.transform,
                   target: patch.target ?? item.target,
+                  motionPath: patch.motionPath
+                    ? normalizeCameraMotionPath(patch.motionPath, patch.target ?? item.target, item)
+                    : item.motionPath,
                 }
               : item
           ),
@@ -2568,9 +2793,9 @@ export const useDirectorStore = create<DirectorStore>((set, get) => {
         const insertedKeyframe: DirectorCameraMotionKeyframe = {
           id: insertedKeyframeId,
           time,
-          position: [...snapshot.position],
-          target: [...snapshot.target],
-          fov: snapshot.fov,
+          position: roundTransformTuple(snapshot.position),
+          target: roundTransformTuple(snapshot.target),
+          fov: Number(snapshot.fov.toFixed(6)),
           targetMode:
             currentKeyframe.targetMode === nextKeyframe.targetMode &&
             currentKeyframe.targetObjectId === nextKeyframe.targetObjectId
@@ -2581,6 +2806,22 @@ export const useDirectorStore = create<DirectorStore>((set, get) => {
             currentKeyframe.targetObjectId === nextKeyframe.targetObjectId
               ? currentKeyframe.targetObjectId ?? null
               : null,
+          targetBodyPart:
+            currentKeyframe.targetMode === "object" &&
+            currentKeyframe.targetObjectId === nextKeyframe.targetObjectId &&
+            currentKeyframe.targetBodyPart === nextKeyframe.targetBodyPart
+              ? currentKeyframe.targetBodyPart ?? "center"
+              : "center",
+          targetFollowMode:
+            currentKeyframe.targetFollowMode === nextKeyframe.targetFollowMode
+              ? currentKeyframe.targetFollowMode ?? "immediate"
+              : "immediate",
+          targetStabilizationEnabled:
+            currentKeyframe.targetStabilizationEnabled === nextKeyframe.targetStabilizationEnabled
+              ? Boolean(currentKeyframe.targetStabilizationEnabled)
+              : false,
+          pointBehavior: "pass",
+          holdSeconds: 0,
         };
         const nextMotionPath = normalizeCameraMotionPath({
           ...motionPath,
@@ -2690,10 +2931,13 @@ export const useDirectorStore = create<DirectorStore>((set, get) => {
           cameras: state.project.cameras.map((camera) => {
             if (camera.id !== cameraId) return camera;
             const motionPath = normalizeCameraMotionPath(camera.motionPath, camera.target, camera);
+            const activatesNewTiming = typeof patch.time === "number"
+              || (!motionPath.speedMode && ("pointBehavior" in patch || "holdSeconds" in patch));
             return {
               ...camera,
               motionPath: normalizeCameraMotionPath({
                 ...motionPath,
+                ...(activatesNewTiming ? { speedMode: "custom" as const } : {}),
                 keyframes: motionPath.keyframes.map((keyframe) =>
                   keyframe.id === keyframeId
                     ? {
@@ -2850,14 +3094,36 @@ export const useDirectorStore = create<DirectorStore>((set, get) => {
         },
       })),
     setCameraMotionProgress: (progress) =>
-      set((state) => ({
-        ...(state as DirectorRuntimeState),
-        cameraMotionProgress: Math.min(1, Math.max(0, progress)),
-      })),
+      set((state) => {
+        const nextProgress = setRuntimePlaybackProgress(progress);
+        return {
+          ...(state as DirectorRuntimeState),
+          cameraMotionProgress: nextProgress,
+        };
+      }),
     setCameraMotionPlaying: (playing) =>
+      set((state) => {
+        const runtimeProgress = getRuntimePlaybackProgress();
+        return {
+          ...(state as DirectorRuntimeState),
+          cameraMotionPlaying: playing,
+          cameraMotionProgress: playing ? state.cameraMotionProgress : runtimeProgress,
+        };
+      }),
+    restartCameraMotionPlayback: () =>
+      set((state) => {
+        setRuntimePlaybackProgress(0);
+        return {
+          ...(state as DirectorRuntimeState),
+          cameraMotionProgress: 0,
+          cameraMotionPlaying: true,
+          cameraMotionPlaybackRevision: state.cameraMotionPlaybackRevision + 1,
+        };
+      }),
+    setCharacterActionPreview: (preview) =>
       set((state) => ({
         ...(state as DirectorRuntimeState),
-        cameraMotionPlaying: playing,
+        characterActionPreview: preview,
       })),
     setMotionStudioOpen: (open) =>
       set((state) => ({
@@ -2867,6 +3133,7 @@ export const useDirectorStore = create<DirectorStore>((set, get) => {
         cameraPilotEditKeyframeId: open ? state.cameraPilotEditKeyframeId : null,
         cameraPilotHoveredTargetId: open ? state.cameraPilotHoveredTargetId : null,
         cameraPilotLockedTargetId: open ? state.cameraPilotLockedTargetId : null,
+        cameraPilotLockedPoint: open ? state.cameraPilotLockedPoint : null,
       })),
     startCameraPilot: (mode = "pilot", editKeyframeId = null) =>
       set((state) => ({
@@ -2884,6 +3151,7 @@ export const useDirectorStore = create<DirectorStore>((set, get) => {
         cameraPilotEditKeyframeId: null,
         cameraPilotHoveredTargetId: null,
         cameraPilotLockedTargetId: null,
+        cameraPilotLockedPoint: null,
       })),
     setCameraPilotHoveredTarget: (objectId) =>
       set((state) => ({
@@ -2894,6 +3162,13 @@ export const useDirectorStore = create<DirectorStore>((set, get) => {
       set((state) => ({
         ...(state as DirectorRuntimeState),
         cameraPilotLockedTargetId: objectId,
+        cameraPilotLockedPoint: null,
+      })),
+    setCameraPilotLockedPoint: (point) =>
+      set((state) => ({
+        ...(state as DirectorRuntimeState),
+        cameraPilotLockedTargetId: null,
+        cameraPilotLockedPoint: point ? [...point] : null,
       })),
     setCameraPilotFollowTarget: (follow) =>
       set((state) => ({
@@ -2985,4 +3260,10 @@ export const useDirectorStore = create<DirectorStore>((set, get) => {
       writePersistedDirectorState(snapshot);
     },
   };
+});
+
+useDirectorStore.subscribe((state, previousState) => {
+  if (state.cameraMotionProgress !== previousState.cameraMotionProgress) {
+    setRuntimePlaybackProgress(state.cameraMotionProgress);
+  }
 });

@@ -1,6 +1,6 @@
 import "./styles/index.css";
 import { useEffect, useState } from "react";
-import { ArrowDown, ArrowRight, BookOpen, Boxes, Check, Clock3, Hand, House, Keyboard, MousePointer2, Plus, Route, Sparkles, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowRight, BookOpen, Boxes, Check, Clock3, Hand, House, Keyboard, MousePointer2, Plus, Route, Sparkles, Trash2, Users, X } from "lucide-react";
 import { DirectorDeskShell } from "./app/layout/DirectorDeskShell";
 import { DirectorCanvas } from "./editor/canvas/DirectorCanvas";
 import { ViewportSensitivitySettings } from "./editor/canvas/ViewportSensitivitySettings";
@@ -21,6 +21,14 @@ import {
   writeDirectorDeskRecords,
   type DirectorDeskRecord,
 } from "./editor/workspaces/directorDeskRegistry";
+import {
+  createPerformanceBenchmarkProject,
+  getPerformanceBenchmarkSceneConfig,
+  getPerformanceBenchmarkMode,
+  getPerformanceBenchmarkPlayback,
+} from "./editor/performance/performanceBenchmark";
+import { getBenchmarkPerformanceProfile } from "./editor/performance/performanceProfiles";
+import { PerformanceSettings } from "./editor/performance/PerformanceSettings";
 
 type AppScreen = "home" | "editor";
 
@@ -28,7 +36,7 @@ const HOME_QUICK_START_STEPS = [
   ["选择导演台", "打开已有导演台，或点击“新建导演台”创建一个空场景。"],
   ["摆人物和道具", "从工具栏添加模型，选中后使用 XYZ 三轴移动、旋转和缩放。"],
   ["记录镜头", "点击“运镜 → 开始掌镜”，用 WASD 移动，每到一个镜头按 Enter。"],
-  ["预演并导出", "先“看路线”检查轨迹，再“看成片”，满意后导出 WebM 参考视频。"],
+  ["预演并导出", "先“看路线”检查轨迹，再“看成片”，满意后导出 MP4 参考视频。"],
 ] as const;
 
 const HOME_RELEASE_NOTES = [
@@ -37,7 +45,15 @@ const HOME_RELEASE_NOTES = [
   "新增路径碰撞开关，可让人物贴地，并阻止人物和镜头穿过场景物体",
   "看成片时可随时暂停和拖动底部时间轴，不会再退出第一视角预览",
   "主成片 FOV 与监看小窗 FOV 已分开设置，导出使用主成片 FOV",
-  "新增可拖动实时监看小窗、WebM 参考视频导出和更可靠的撤销逻辑",
+  "新增可拖动实时监看小窗、MP4 参考视频导出和更可靠的撤销逻辑",
+] as const;
+
+const HOME_COMMUNITY_CONTRIBUTORS = [
+  {
+    name: "AIGC 耀光",
+    douyinId: "AIJPDM001",
+    contribution: "群友镜头预设构想与共创反馈",
+  },
 ] as const;
 
 const HOME_CONTROL_GROUPS = [
@@ -125,6 +141,22 @@ function updateUrlDirectorDeskInstanceId(id: string | null) {
 function createInitialDirectorDeskViewState() {
   const records = ensureDirectorDeskRecords();
   const urlInstanceId = getUrlDirectorDeskInstanceId();
+  const benchmarkMode = getPerformanceBenchmarkMode(window.location.search);
+  if (benchmarkMode) {
+    const timestamp = new Date().toISOString();
+    const benchmarkId = urlInstanceId ?? "benchmark_standard";
+    const benchmarkRecord: DirectorDeskRecord = {
+      id: benchmarkId,
+      name: `${getPerformanceBenchmarkSceneConfig(benchmarkMode).label}性能基准（临时）`,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    return {
+      records: [...records.filter((record) => record.id !== benchmarkId), benchmarkRecord],
+      activeDeskId: benchmarkId,
+      screen: "editor" as AppScreen,
+    };
+  }
   return {
     records,
     activeDeskId: urlInstanceId ?? getInitialDirectorDeskId(records) ?? records[0]?.id ?? "",
@@ -156,6 +188,7 @@ function isEditableShortcutTarget(target: EventTarget | null) {
 }
 
 export default function App() {
+  const benchmarkMode = getPerformanceBenchmarkMode(window.location.search);
   const viewMode = useDirectorStore((state) => state.viewMode);
   const setViewMode = useDirectorStore((state) => state.setViewMode);
   const motionStudioOpen = useDirectorStore((state) => state.motionStudioOpen);
@@ -189,8 +222,31 @@ export default function App() {
 
   useEffect(() => {
     initDirectorDeskHostBridge();
-    if (screen === "editor") {
+    if (screen === "editor" && !benchmarkMode) {
       openDirectorDesk(activeDeskId, directorDesks);
+    }
+
+    if (benchmarkMode) {
+      const state = useDirectorStore.getState();
+      const benchmarkProfile = getBenchmarkPerformanceProfile(window.location.search);
+      const benchmarkPlayback = getPerformanceBenchmarkPlayback(window.location.search);
+      const benchmarkScene = getPerformanceBenchmarkSceneConfig(benchmarkMode);
+      useDirectorStore.setState({
+        ...state,
+        project: createPerformanceBenchmarkProject(benchmarkMode),
+        viewMode: "director",
+        selectedObjectId: null,
+        selectedObjectIds: [],
+        selectedCrowdId: null,
+        selectedCameraKeyframeId: null,
+        selectedCameraKeyframeIds: [],
+        selectedObjectMotionKeyframeId: null,
+        showCharacterRoutes: false,
+        motionStudioOpen: benchmarkScene.monitorEnabled,
+        cameraMotionProgress: benchmarkPlayback.progress,
+        cameraMotionPlaying: benchmarkPlayback.playing,
+        ...(benchmarkProfile ? { performanceProfile: benchmarkProfile } : {}),
+      });
     }
 
     window.parent?.postMessage({ type: "storyai:director-desk-ready" }, getDirectorDeskHostOrigin());
@@ -366,6 +422,24 @@ export default function App() {
           </ul>
         </section>
 
+        <section className="director-home-contributors" aria-labelledby="director-home-contributors-title">
+          <header className="director-home-section-heading">
+            <span><Users aria-hidden="true" size={16} />群友贡献</span>
+            <div>
+              <h2 id="director-home-contributors-title">共同完善 3D 导演台</h2>
+              <p>感谢群友提供真实工作流、镜头构想和使用反馈。</p>
+            </div>
+          </header>
+          <dl className="director-home-contributor-list">
+            {HOME_COMMUNITY_CONTRIBUTORS.map((contributor) => (
+              <div key={contributor.douyinId}>
+                <dt>{contributor.name}</dt>
+                <dd><span>{contributor.contribution}</span><strong>抖音号：{contributor.douyinId}</strong></dd>
+              </div>
+            ))}
+          </dl>
+        </section>
+
         <section className="director-home-controls" aria-labelledby="director-home-controls-title">
           <header className="director-home-section-heading">
             <span><Keyboard aria-hidden="true" size={16} />完整操作表</span>
@@ -417,6 +491,7 @@ export default function App() {
           <button className="top-bar-title top-bar-home-button" type="button" onClick={backToHome}>
             3D导演台
           </button>
+          <span className="top-bar-version" aria-label={`当前版本 v${__APP_VERSION__}`}>v{__APP_VERSION__}</span>
           <button className="top-bar-home-nav-button" type="button" aria-label="返回首页" onClick={backToHome}>
             <House aria-hidden="true" size={14} strokeWidth={1.9} />
             首页
@@ -475,6 +550,7 @@ export default function App() {
             运镜
           </button>
           <ViewportSensitivitySettings />
+          <PerformanceSettings />
         </div>
         <div className="top-bar-actions">
           <button

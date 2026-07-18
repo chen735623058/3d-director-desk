@@ -4,7 +4,7 @@ import { CAMERA_MOTION_PRESETS, getCameraMotionPresetPatch } from "./cameraMotio
 it("provides beginner-friendly camera parameter presets", () => {
   expect(CAMERA_MOTION_PRESETS.map((preset) => preset.label)).toEqual([
     "电影慢推",
-    "人物跟拍",
+    "平稳跟拍节奏",
     "快速追拍",
     "产品环绕",
     "平稳横移",

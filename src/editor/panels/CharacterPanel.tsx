@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { LocateFixed, MapPinPlus, Plus, Trash2 } from "lucide-react";
+import { useMemo, useRef, useState, type ChangeEvent } from "react";
+import { LocateFixed, MapPinPlus, Plus, Trash2, Upload } from "lucide-react";
 import {
   InspectorAxisGroup,
   InspectorColorField,
@@ -11,19 +11,58 @@ import {
 import { MANNEQUIN_POSE_PRESETS } from "../presets/mannequinPosePresets";
 import { CHARACTER_ACTION_PRESETS } from "../presets/characterActionPresets";
 import { getCameraMotionPath } from "../schema/cameraMotion";
-import { normalizeObjectMotionPath } from "../schema/objectMotion";
+import { getObjectMotionTimingPlan, normalizeObjectMotionPath } from "../schema/objectMotion";
 import { getCrowdAnchorTransform, useDirectorStore } from "../store/directorStore";
+import { inspectCharacterAnimationFile } from "../loaders/characterAnimationInspection";
+import { readLocalModelFile } from "../loaders/localModelImport";
+import { createImportedCharacterActionId } from "../schema/importedCharacterAction";
+import type { CharacterRigProfile } from "../schema/directorProject";
+import type { DirectorAnimationAssetRef, DirectorAssetRef } from "../schema/directorProject";
+import { isCompleteDirectorCharacterBoneMap } from "../schema/semanticBody";
+import { RouteCustomEasingControl } from "../motion/RouteCustomEasingControl";
+
+function normalizeAnimationRigProfile(profile: string): CharacterRigProfile {
+  if (profile === "mixamorig1") return "mixamo-alt";
+  if (profile === "generic") return "generic-humanoid";
+  if (profile === "mixamo" || profile === "bip" || profile === "cc-base") return profile;
+  return "unknown";
+}
+
+export function areAnimationProfilesCompatible(
+  model: CharacterRigProfile,
+  animation: CharacterRigProfile,
+  hasCompleteBoneMap = false
+) {
+  const mixamoProfiles = new Set<CharacterRigProfile>(["mixamo", "mixamo-alt"]);
+  if (mixamoProfiles.has(model) && mixamoProfiles.has(animation)) return true;
+  if (hasCompleteBoneMap && animation !== "unknown") return true;
+  return model !== "unknown" && model === animation;
+}
+
+export function isNativeAnimationForCharacter(
+  animationAsset: DirectorAnimationAssetRef,
+  characterAsset: DirectorAssetRef | undefined
+) {
+  if (!characterAsset) return false;
+  if (animationAsset.sourceCharacterAssetId) return animationAsset.sourceCharacterAssetId === characterAsset.id;
+  return animationAsset.url === characterAsset.url && animationAsset.fileName === characterAsset.fileName;
+}
 
 function replaceAxis(tuple: [number, number, number], axis: 0 | 1 | 2, value: number): [number, number, number] {
   return tuple.map((item, index) => (index === axis ? value : item)) as [number, number, number];
 }
 
 export function CharacterPanel() {
+  const animationInputRef = useRef<HTMLInputElement | null>(null);
   const [activeTab, setActiveTab] = useState<"properties" | "pose" | "action" | "route">("properties");
+  const [animationImportStatus, setAnimationImportStatus] = useState<string | null>(null);
+  const [animationImportBusy, setAnimationImportBusy] = useState(false);
   const selectedCrowdId = useDirectorStore((state) => state.selectedCrowdId);
   const selectedObjectId = useDirectorStore((state) => state.selectedObjectId);
   const objects = useDirectorStore((state) => state.project.objects);
+  const assets = useDirectorStore((state) => state.project.assets);
   const cameras = useDirectorStore((state) => state.project.cameras);
+  const animationAssets = useDirectorStore((state) => state.project.animationAssets ?? []);
   const activeCameraId = useDirectorStore((state) => state.project.activeCameraId);
   const cameraMotionProgress = useDirectorStore((state) => state.cameraMotionProgress);
   const updateObjectName = useDirectorStore((state) => state.updateObjectName);
@@ -40,8 +79,11 @@ export function CharacterPanel() {
   const updateCrowdPoseControl = useDirectorStore((state) => state.updateCrowdPoseControl);
   const applyCharacterActionPreset = useDirectorStore((state) => state.applyCharacterActionPreset);
   const applyCrowdActionPreset = useDirectorStore((state) => state.applyCrowdActionPreset);
+  const addImportedAnimationAsset = useDirectorStore((state) => state.addImportedAnimationAsset);
+  const removeImportedAnimationAsset = useDirectorStore((state) => state.removeImportedAnimationAsset);
   const setCameraMotionProgress = useDirectorStore((state) => state.setCameraMotionProgress);
   const setCameraMotionPlaying = useDirectorStore((state) => state.setCameraMotionPlaying);
+  const restartCameraMotionPlayback = useDirectorStore((state) => state.restartCameraMotionPlayback);
   const addCharacterRoutePoint = useDirectorStore((state) => state.addCharacterRoutePoint);
   const insertObjectMotionKeyframeAfter = useDirectorStore((state) => state.insertObjectMotionKeyframeAfter);
   const deleteObjectMotionKeyframe = useDirectorStore((state) => state.deleteObjectMotionKeyframe);
@@ -86,13 +128,107 @@ export function CharacterPanel() {
   if (!selection) return null;
 
   const role = selection.role;
-  const roleColor = selection.color;
+  const roleAsset = assets.find((asset) => asset.id === role.assetRefId);
+  const roleRigProfile: CharacterRigProfile = roleAsset?.characterRigProfile
+    ?? (role.characterRig?.rigType === "mixamo" ? "mixamo" : role.characterRig?.rigType === "ue4-mannequin" ? "bip" : "unknown");
+  const roleImportReadiness = roleAsset?.characterImportReadiness ?? "ready";
+  const allowsHumanoidActions = roleImportReadiness === "ready";
+  const roleHasCompleteBoneMap = isCompleteDirectorCharacterBoneMap(roleAsset?.characterBoneMap);
+  const compatibleAnimationAssets = animationAssets.filter((animationAsset) =>
+    isNativeAnimationForCharacter(animationAsset, roleAsset)
+      || (allowsHumanoidActions && areAnimationProfilesCompatible(roleRigProfile, animationAsset.rigProfile, roleHasCompleteBoneMap))
+  );
+  const importedActionOptions = compatibleAnimationAssets.flatMap((animationAsset) =>
+    animationAsset.clips.map((clip) => ({
+      id: createImportedCharacterActionId(animationAsset.id, clip.id),
+      label: `${animationAsset.name} · ${clip.name}`,
+      displayLabel: clip.name,
+      duration: clip.duration,
+      asset: animationAsset,
+    }))
+  );
+
+  async function handleAnimationImport(event: ChangeEvent<HTMLInputElement>) {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    if (!file) return;
+    setAnimationImportBusy(true);
+    setAnimationImportStatus("正在检查动作文件...");
+
+    try {
+      const report = await inspectCharacterAnimationFile(file);
+      const validClips = report.clips.filter((clip) => clip.duration > 0.05 && clip.trackCount > 0);
+      if (!validClips.length) throw new Error(report.warnings[0] ?? "没有检测到可播放动作");
+      const stored = await readLocalModelFile(file);
+      const rigProfile = normalizeAnimationRigProfile(report.rigProfile);
+      const animationAssetId = addImportedAnimationAsset({
+        name: stored.name,
+        fileName: stored.fileName,
+        url: stored.url,
+        modelFormat: report.format,
+        storageKey: stored.storageKey,
+        byteLength: stored.byteLength,
+        rigProfile,
+        clips: validClips.map((clip, index) => ({
+          id: `clip_${index + 1}`,
+          name: clip.name,
+          duration: clip.duration,
+          trackCount: clip.trackCount,
+        })),
+      });
+
+      if (areAnimationProfilesCompatible(roleRigProfile, rigProfile, roleHasCompleteBoneMap)) {
+        applyCharacterActionPreset(role.id, createImportedCharacterActionId(animationAssetId, "clip_1"));
+        restartCameraMotionPlayback();
+        setAnimationImportStatus(`已导入 ${validClips.length} 个动作，正在预览第一段`);
+      } else {
+        setAnimationImportStatus(`动作已保存，但与当前人物骨架不兼容（人物 ${roleRigProfile} / 动作 ${rigProfile}）`);
+      }
+    } catch (error) {
+      setAnimationImportStatus(error instanceof Error ? error.message : "动作导入失败");
+    } finally {
+      setAnimationImportBusy(false);
+      input.value = "";
+    }
+  }
+  const roleColor = role.color ?? (roleAsset ? "#ffffff" : selection.color);
+  const isRobotExpressive = /robot-expressive\.glb(?:$|[?#])/i.test(roleAsset?.url ?? "");
   const transform = selection.crowdAnchor;
   const isCrowd = selection.mode === "crowd";
   const routePath = normalizeObjectMotionPath(role.motionPath, role.transform);
   const selectedRoutePoint = routePath.keyframes.find((item) => item.id === selectedObjectMotionKeyframeId) ?? null;
   const activeCamera = cameras.find((item) => item.id === activeCameraId) ?? cameras[0];
   const timelineDuration = activeCamera ? getCameraMotionPath(activeCamera).duration : 6;
+  const routeTimingPlan = getObjectMotionTimingPlan(role, timelineDuration);
+  const selectedRoutePointIndex = selectedRoutePoint
+    ? routePath.keyframes.indexOf(selectedRoutePoint)
+    : -1;
+  const selectedArrivalProgress = selectedRoutePointIndex >= 0
+    ? routeTimingPlan?.arrivals[selectedRoutePointIndex] ?? selectedRoutePoint?.time ?? 0
+    : 0;
+  const selectedArrivalMinimum = selectedRoutePointIndex > 0
+    ? routePath.keyframes[selectedRoutePointIndex - 1].time * timelineDuration
+      + (routePath.keyframes[selectedRoutePointIndex - 1].pointBehavior === "hold"
+        ? routePath.keyframes[selectedRoutePointIndex - 1].holdSeconds ?? 0
+        : 0)
+      + 0.1
+    : 0;
+  const selectedArrivalMaximum = selectedRoutePointIndex >= 0 && selectedRoutePointIndex < routePath.keyframes.length - 1
+    ? routePath.keyframes[selectedRoutePointIndex + 1].time * timelineDuration - 0.1
+    : timelineDuration;
+
+  function setRouteSpeedMode(speedMode: "uniform" | "soft" | "custom") {
+    const keyframes = speedMode === "custom" && routePath.speedMode !== "custom" && routeTimingPlan
+      ? routePath.keyframes.map((keyframe, index) => ({
+          ...keyframe,
+          time: routeTimingPlan.arrivals[index] ?? keyframe.time,
+        }))
+      : routePath.keyframes;
+    updateObjectMotionPath(role.id, {
+      speedMode,
+      ...(speedMode === "custom" ? { customEasing: [0, 0, 1, 1], keyframes } : {}),
+    });
+  }
   const poseGroups = [
     {
       title: "身体",
@@ -359,7 +495,7 @@ export function CharacterPanel() {
         </>
       ) : activeTab === "pose" ? (
         <InspectorSection title="姿势预设" className="pose-preset-section">
-          {role.characterRig ? (
+          {role.characterRig && allowsHumanoidActions ? (
             <>
               <div className="preset-grid">
                 {MANNEQUIN_POSE_PRESETS.map((preset) => (
@@ -405,11 +541,20 @@ export function CharacterPanel() {
               </InspectorSection>
             </>
           ) : (
-            <p>该模型未识别到标准 humanoid 骨骼，暂不支持姿势编辑。</p>
+            <p className="character-action-compatibility" role="status">该模型尚未完成标准人形骨骼映射，暂不支持人形姿势编辑。</p>
           )}
         </InspectorSection>
       ) : activeTab === "action" ? (
         <InspectorSection title="动作预设" className="pose-preset-section">
+          {!allowsHumanoidActions ? (
+            <p className="character-action-compatibility" role="status">
+              {roleImportReadiness === "native-only"
+                ? "这个模型只保证播放自带动作，暂不套用人形走路、跑步等预设。"
+                : roleImportReadiness === "manual-mapping"
+                  ? "这个模型需要补全骨骼映射后，才能安全使用人形动作预设。"
+                  : "这个模型只能静态使用。"}
+            </p>
+          ) : null}
           <div className="preset-grid">
             <button
               className={!role.characterRig?.actionPresetId ? "is-active" : undefined}
@@ -422,7 +567,7 @@ export function CharacterPanel() {
             >
               无动作
             </button>
-            {CHARACTER_ACTION_PRESETS.map((preset) => (
+            {allowsHumanoidActions ? CHARACTER_ACTION_PRESETS.map((preset) => (
               <button
                 key={preset.id}
                 className={role.characterRig?.actionPresetId === preset.id ? "is-active" : undefined}
@@ -431,15 +576,90 @@ export function CharacterPanel() {
                 onClick={() => {
                   if (isCrowd && selection.crowdId) applyCrowdActionPreset(selection.crowdId, preset.id);
                   else applyCharacterActionPreset(role.id, preset.id);
-                  setCameraMotionProgress(0);
-                  setCameraMotionPlaying(true);
+                  restartCameraMotionPlayback();
                 }}
               >
                 <span>{preset.label}</span>
-                <small>{preset.duration.toFixed(2)} 秒</small>
+                  <small>{(
+                  isRobotExpressive
+                    ? preset.robotExpressiveDuration ?? preset.duration
+                    : role.characterRig?.rigType === "mixamo"
+                    ? preset.mixamoDuration ?? preset.duration
+                    : preset.duration
+                ).toFixed(2)} 秒</small>
               </button>
-            ))}
+            )) : null}
+            {!isCrowd ? importedActionOptions.map((action) => (
+              <button
+                key={action.id}
+                className={`imported-action-preset${role.characterRig?.actionPresetId === action.id ? " is-active" : ""}`}
+                type="button"
+                aria-label={`播放导入动作 ${action.label}`}
+                onClick={() => {
+                  applyCharacterActionPreset(role.id, action.id);
+                  restartCameraMotionPlayback();
+                }}
+              >
+                <span>{action.displayLabel}</span>
+                <small>{action.duration.toFixed(2)} 秒</small>
+              </button>
+            )) : null}
           </div>
+          {!isCrowd ? (
+            <div className="imported-action-section">
+              <div className="imported-action-header">
+                <div>
+                  <strong>我的动作</strong>
+                  <span>{animationAssets.length ? `${compatibleAnimationAssets.length}/${animationAssets.length} 个文件兼容` : "支持 FBX / GLB"}</span>
+                </div>
+                <button
+                  className="imported-action-upload"
+                  disabled={animationImportBusy || roleImportReadiness === "static-only"}
+                  type="button"
+                  onClick={() => animationInputRef.current?.click()}
+                >
+                  <Upload aria-hidden="true" size={14} />
+                  {animationImportBusy ? "检查中" : "导入动作"}
+                </button>
+              </div>
+              <input
+                ref={animationInputRef}
+                aria-label="选择人物动作文件"
+                className="hidden-file-input"
+                accept=".fbx,.glb"
+                type="file"
+                onChange={(event) => void handleAnimationImport(event)}
+              />
+              {animationImportStatus ? <p className="imported-action-status" role="status">{animationImportStatus}</p> : null}
+              {animationAssets.length ? (
+                <div className="imported-action-files">
+                  {animationAssets.map((animationAsset) => {
+                    const compatible = isNativeAnimationForCharacter(animationAsset, roleAsset)
+                      || (allowsHumanoidActions && areAnimationProfilesCompatible(
+                        roleRigProfile,
+                        animationAsset.rigProfile,
+                        roleHasCompleteBoneMap
+                      ));
+                    return (
+                      <div key={animationAsset.id} className="imported-action-file">
+                        <span>
+                          <strong>{animationAsset.name}</strong>
+                          <small>{compatible ? `${animationAsset.clips.length} 个动作` : `不兼容 · ${animationAsset.rigProfile}`}</small>
+                        </span>
+                        <button
+                          aria-label={`删除动作文件 ${animationAsset.name}`}
+                          type="button"
+                          onClick={() => removeImportedAnimationAsset(animationAsset.id)}
+                        >
+                          <Trash2 aria-hidden="true" size={13} />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
         </InspectorSection>
       ) : (
         <InspectorSection title="人物路线" className="pose-preset-section">
@@ -467,7 +687,7 @@ export function CharacterPanel() {
                   type="button"
                   disabled={!selectedRoutePoint}
                   onClick={() => {
-                    if (selectedRoutePoint) setCameraMotionProgress(selectedRoutePoint.time);
+                    if (selectedRoutePoint) setCameraMotionProgress(selectedArrivalProgress);
                   }}
                 >
                   <LocateFixed aria-hidden="true" size={14} />
@@ -502,22 +722,35 @@ export function CharacterPanel() {
                 </button>
               </div>
               <div className="character-route-shape" role="group" aria-label="路线形状">
-                <span>路线</span>
+                <span>形状</span>
                 <button
                   type="button"
                   aria-pressed={routePath.interpolation === "smooth"}
                   onClick={() => updateObjectMotionPath(role.id, { interpolation: "smooth" })}
                 >
-                  平滑曲线
+                  平滑
                 </button>
                 <button
                   type="button"
                   aria-pressed={routePath.interpolation === "linear"}
                   onClick={() => updateObjectMotionPath(role.id, { interpolation: "linear" })}
                 >
-                  直线
+                  折线
                 </button>
               </div>
+              <div className="character-route-shape character-route-shape--speed" role="group" aria-label="路线速度">
+                <span>速度</span>
+                <button type="button" aria-pressed={routePath.speedMode === "uniform"} onClick={() => setRouteSpeedMode("uniform")}>匀速</button>
+                <button type="button" aria-pressed={routePath.speedMode === "soft"} onClick={() => setRouteSpeedMode("soft")}>柔和</button>
+                <button type="button" aria-pressed={(routePath.speedMode ?? "custom") === "custom"} onClick={() => setRouteSpeedMode("custom")}>自定义</button>
+              </div>
+              {routePath.speedMode === "custom" ? (
+                <RouteCustomEasingControl
+                  curve={routePath.customEasing}
+                  label="人物段内节奏"
+                  onChange={(customEasing) => updateObjectMotionPath(role.id, { customEasing })}
+                />
+              ) : null}
               <div className="character-route-points" role="group" aria-label="人物路线点列表">
                 {routePath.keyframes.map((point, index) => (
                   <button
@@ -531,7 +764,7 @@ export function CharacterPanel() {
                     }}
                   >
                     <strong>{index + 1}</strong>
-                    <span>{(point.time * timelineDuration).toFixed(1)} 秒</span>
+                    <span>{((routeTimingPlan?.arrivals[index] ?? point.time) * timelineDuration).toFixed(1)} 秒</span>
                   </button>
                 ))}
               </div>
@@ -541,14 +774,84 @@ export function CharacterPanel() {
                     label="到达时间"
                     rangeAriaLabel="路线点到达时间滑杆"
                     numberAriaLabel="路线点到达时间"
-                    min="0"
-                    max={String(timelineDuration)}
+                    min={String(selectedArrivalMinimum)}
+                    max={String(selectedArrivalMaximum)}
                     step="0.1"
-                    value={selectedRoutePoint.time * timelineDuration}
+                    disabled={routePath.speedMode !== "custom" || selectedRoutePointIndex <= 0 || selectedRoutePointIndex >= routePath.keyframes.length - 1}
+                    value={Number((selectedArrivalProgress * timelineDuration).toFixed(1))}
                     onValueChange={(value) => updateObjectMotionKeyframe(role.id, selectedRoutePoint.id, {
-                      time: Math.min(1, Math.max(0, Number(value) / timelineDuration)),
+                      time: Math.min(selectedArrivalMaximum, Math.max(selectedArrivalMinimum, Number(value))) / timelineDuration,
                     })}
                   />
+                  <div className="inspector-field">
+                    <span className="inspector-field-label">到点行为</span>
+                    <div className="character-route-shape character-route-shape--compact" role="group" aria-label="人物路线点行为">
+                      <button
+                        type="button"
+                        aria-pressed={(selectedRoutePoint.pointBehavior ?? "pass") === "pass"}
+                        onClick={() => updateObjectMotionKeyframe(role.id, selectedRoutePoint.id, { pointBehavior: "pass", holdSeconds: 0 })}
+                      >经过</button>
+                      <button
+                        type="button"
+                        disabled={selectedRoutePointIndex === routePath.keyframes.length - 1}
+                        aria-pressed={selectedRoutePoint.pointBehavior === "hold"}
+                        onClick={() => updateObjectMotionKeyframe(role.id, selectedRoutePoint.id, {
+                          pointBehavior: "hold",
+                          holdSeconds: selectedRoutePoint.holdSeconds || 1,
+                        })}
+                      >停留</button>
+                    </div>
+                  </div>
+                  {selectedRoutePoint.pointBehavior === "hold" ? (
+                    <>
+                      <InspectorRangeNumberField
+                        label="停留时长"
+                        rangeAriaLabel="路线点停留时长滑杆"
+                        numberAriaLabel="路线点停留时长"
+                        min="0.1"
+                        max={String(timelineDuration)}
+                        step="0.1"
+                        value={selectedRoutePoint.holdSeconds ?? 1}
+                        onValueChange={(value) => updateObjectMotionKeyframe(role.id, selectedRoutePoint.id, {
+                          holdSeconds: Math.max(0.1, Number(value)),
+                        })}
+                      />
+                      <label className="inspector-field">
+                        <span className="inspector-field-label">停留动作</span>
+                        <select
+                          aria-label="路线点停留动作方式"
+                          value={selectedRoutePoint.holdAction ?? "current"}
+                          onChange={(event) => updateObjectMotionKeyframe(role.id, selectedRoutePoint.id, {
+                            holdAction: event.currentTarget.value === "stand"
+                              ? "stand"
+                              : event.currentTarget.value === "custom"
+                                ? "custom"
+                                : "current",
+                          })}
+                        >
+                          <option value="stand">站立</option>
+                          <option value="current">保持当前动作</option>
+                          <option value="custom">指定动作</option>
+                        </select>
+                      </label>
+                      {selectedRoutePoint.holdAction === "custom" ? (
+                        <label className="inspector-field">
+                          <span className="inspector-field-label">指定动作</span>
+                          <select
+                            aria-label="路线点指定停留动作"
+                            value={selectedRoutePoint.holdActionPresetId ?? ""}
+                            onChange={(event) => updateObjectMotionKeyframe(role.id, selectedRoutePoint.id, {
+                              holdActionPresetId: event.currentTarget.value || null,
+                            })}
+                          >
+                            <option value="">站立</option>
+                            {allowsHumanoidActions ? CHARACTER_ACTION_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>) : null}
+                            {importedActionOptions.map((action) => <option key={action.id} value={action.id}>{action.label}</option>)}
+                          </select>
+                        </label>
+                      ) : null}
+                    </>
+                  ) : null}
                   <InspectorAxisGroup
                     label="路线点位置"
                     axes={([0, 1, 2] as const).map((axis) => ({
@@ -570,7 +873,8 @@ export function CharacterPanel() {
                       })}
                     >
                       <option value="">自动行走</option>
-                      {CHARACTER_ACTION_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}
+                      {allowsHumanoidActions ? CHARACTER_ACTION_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>) : null}
+                      {importedActionOptions.map((action) => <option key={action.id} value={action.id}>{action.label}</option>)}
                     </select>
                   </label>
                   <label className="inspector-field">

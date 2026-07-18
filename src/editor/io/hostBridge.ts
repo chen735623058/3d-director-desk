@@ -1,4 +1,17 @@
 import { useDirectorStore } from "../store/directorStore";
+import {
+  DIRECTOR_EXTENSION_PROTOCOL_VERSION,
+  DIRECTOR_EXTENSION_REQUEST_TYPE,
+  DIRECTOR_EXTENSION_RESPONSE_TYPE,
+  createDirectorExtensionResponse,
+  isDirectorExtensionAction,
+  parseDirectorExtensionRequest,
+  type DirectorExtensionResponsePayload,
+} from "./extensionProtocol";
+import { requestCleanFrameExport } from "./cleanFrameExport";
+import { requestReferenceVideoExport } from "./referenceVideoExport";
+import { getDirectorProjectFingerprint } from "./projectDocument";
+import { listDirectorPluginResults, submitDirectorPluginResult } from "./pluginResultRegistry";
 
 interface HostPanoramaPayload {
   edgeId?: unknown;
@@ -22,6 +35,7 @@ export interface HostCaptureBatchPayload {
 }
 
 let initialized = false;
+let activeExtensionExportRequestId: string | null = null;
 export const DIRECTOR_DESK_SESSION_OPENED_EVENT = "storyai:director-desk-session-opened";
 
 function normalizeString(value: unknown) {
@@ -51,7 +65,9 @@ export function getDirectorDeskHostOrigin() {
 }
 
 function isAllowedHostEvent(event: MessageEvent) {
-  return event.origin === getDirectorDeskHostOrigin();
+  const fromExpectedOrigin = event.origin === getDirectorDeskHostOrigin();
+  const fromParentWindow = window.parent === window || event.source === window.parent;
+  return fromExpectedOrigin && fromParentWindow;
 }
 
 function normalizeTheme(value: unknown): "dark" | "light" | null {
@@ -71,8 +87,35 @@ function getInitialHostTheme() {
   }
 }
 
-function importHostPanorama(_payload: HostPanoramaPayload) {
-  // 全景图功能已关闭；保留旧消息入口，避免旧宿主发送时抛错。
+function isSupportedHostImageUrl(value: string) {
+  if (value.startsWith("data:image/")) {
+    return true;
+  }
+
+  try {
+    const url = new URL(value, window.location.href);
+    return url.protocol === "http:" || url.protocol === "https:" || url.protocol === "blob:";
+  } catch {
+    return false;
+  }
+}
+
+function importHostPanorama(payload: HostPanoramaPayload) {
+  const edgeId = normalizeString(payload.edgeId);
+  const sourceNodeId = normalizeString(payload.sourceNodeId);
+  const imageUrl = normalizeString(payload.imageUrl);
+  const fileName = normalizeString(payload.fileName);
+
+  if (!edgeId || !sourceNodeId || !fileName || !imageUrl || !isSupportedHostImageUrl(imageUrl)) {
+    return;
+  }
+
+  useDirectorStore.getState().setPanoramaAsset({
+    name: fileName,
+    fileName,
+    url: imageUrl,
+    projectionMode: "equirectangular",
+  });
 }
 
 function openHostSession(payload: HostSessionPayload) {
@@ -85,6 +128,123 @@ function openHostSession(payload: HostSessionPayload) {
     useDirectorStore.getState().openScopedScene(instanceId);
     window.dispatchEvent(new CustomEvent(DIRECTOR_DESK_SESSION_OPENED_EVENT, { detail: { instanceId } }));
   }
+}
+
+function postDirectorExtensionResponse(payload: DirectorExtensionResponsePayload) {
+  window.parent?.postMessage(
+    { type: DIRECTOR_EXTENSION_RESPONSE_TYPE, payload },
+    getDirectorDeskHostOrigin()
+  );
+}
+
+async function handleDirectorExtensionRequest(payload: unknown) {
+  const request = parseDirectorExtensionRequest(payload);
+  if (request) {
+    if (request.action === "plugin.results.list") {
+      const projectFingerprint = getDirectorProjectFingerprint(useDirectorStore.getState().project);
+      postDirectorExtensionResponse({
+        protocolVersion: DIRECTOR_EXTENSION_PROTOCOL_VERSION,
+        requestId: request.requestId,
+        action: request.action,
+        ok: true,
+        data: listDirectorPluginResults(projectFingerprint),
+      });
+      return;
+    }
+    if (request.action === "plugin.result.submit") {
+      try {
+        const project = useDirectorStore.getState().project;
+        const result = submitDirectorPluginResult(
+          request.options?.result,
+          getDirectorProjectFingerprint(project)
+        );
+        postDirectorExtensionResponse({
+          protocolVersion: DIRECTOR_EXTENSION_PROTOCOL_VERSION,
+          requestId: request.requestId,
+          action: request.action,
+          ok: true,
+          data: result,
+        });
+      } catch (error) {
+        postDirectorExtensionResponse({
+          protocolVersion: DIRECTOR_EXTENSION_PROTOCOL_VERSION,
+          requestId: request.requestId,
+          action: request.action,
+          ok: false,
+          error: {
+            code: "invalid-plugin-result",
+            message: error instanceof Error ? error.message : "插件结果无效",
+          },
+        });
+      }
+      return;
+    }
+    if (request.action === "export.frame" || request.action === "export.video") {
+      if (activeExtensionExportRequestId) {
+        postDirectorExtensionResponse({
+          protocolVersion: DIRECTOR_EXTENSION_PROTOCOL_VERSION,
+          requestId: request.requestId,
+          action: request.action,
+          ok: false,
+          error: { code: "export-busy", message: "已有导出任务正在进行，请稍后再试" },
+        });
+        return;
+      }
+      activeExtensionExportRequestId = request.requestId;
+      try {
+        const result = request.action === "export.frame"
+          ? await requestCleanFrameExport({
+              fileName: request.options?.fileName ?? "current-frame.png",
+              position: request.options?.position ?? "current",
+              quality: request.options?.quality ?? "720p",
+            })
+          : await requestReferenceVideoExport({
+              fileName: request.options?.fileName ?? "director-reference.mp4",
+              fps: request.options?.fps ?? 30,
+              quality: request.options?.quality ?? "720p",
+            });
+        postDirectorExtensionResponse({
+          protocolVersion: DIRECTOR_EXTENSION_PROTOCOL_VERSION,
+          requestId: request.requestId,
+          action: request.action,
+          ok: true,
+          data: result,
+        });
+      } catch (error) {
+        postDirectorExtensionResponse({
+          protocolVersion: DIRECTOR_EXTENSION_PROTOCOL_VERSION,
+          requestId: request.requestId,
+          action: request.action,
+          ok: false,
+          error: {
+            code: "export-failed",
+            message: error instanceof Error ? error.message : "导出失败",
+          },
+        });
+      } finally {
+        activeExtensionExportRequestId = null;
+      }
+      return;
+    }
+    const state = useDirectorStore.getState();
+    postDirectorExtensionResponse(createDirectorExtensionResponse(request, state));
+    return;
+  }
+
+  const value = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
+  const requestId = normalizeString(value.requestId).slice(0, 128) || "unknown";
+  const action = normalizeString(value.action);
+  const unsupportedAction = Boolean(action) && !isDirectorExtensionAction(action);
+  postDirectorExtensionResponse({
+    protocolVersion: DIRECTOR_EXTENSION_PROTOCOL_VERSION,
+    requestId,
+    action: "unknown",
+    ok: false,
+    error: {
+      code: unsupportedAction ? "unsupported-action" : "invalid-request",
+      message: unsupportedAction ? `不支持的二创接口操作：${action}` : "二创接口请求缺少有效的 requestId 或 action",
+    },
+  });
 }
 
 export function postDirectorDeskCapturesToHost(
@@ -134,6 +294,11 @@ function handleHostMessage(event: MessageEvent) {
 
   if (event.data?.type === "storyai:director-desk-panorama") {
     importHostPanorama((event.data.payload || {}) as HostPanoramaPayload);
+    return;
+  }
+
+  if (event.data?.type === DIRECTOR_EXTENSION_REQUEST_TYPE) {
+    void handleDirectorExtensionRequest(event.data.payload);
   }
 }
 
@@ -153,5 +318,6 @@ export function clearDirectorDeskHostBridge() {
   }
 
   initialized = false;
+  activeExtensionExportRequestId = null;
   window.removeEventListener("message", handleHostMessage);
 }

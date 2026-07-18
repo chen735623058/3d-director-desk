@@ -12,6 +12,7 @@ import {
   TextureLoader,
 } from "three";
 import type { DirectorAssetRef, PanoramaProjectionMode } from "../schema/directorProject";
+import { useResolvedLocalAssetUrl } from "../loaders/useResolvedLocalAssetUrl";
 import { getPanoramaRotationRadians } from "./panoramaMath";
 
 type PanoramaTextureState =
@@ -103,12 +104,17 @@ export function ViewportBackground({
 }) {
   const { gl, scene } = useThree();
   const projectionMode = panoramaAsset?.projectionMode ?? "equirectangular";
-  const textureState = usePanoramaTexture(panoramaAsset?.url ?? null, projectionMode);
+  const resolvedPanoramaUrl = useResolvedLocalAssetUrl(panoramaAsset ?? undefined);
+  const textureState = usePanoramaTexture(resolvedPanoramaUrl ?? null, projectionMode);
   const safeRadius = Math.max(10, panoramaRadius);
   const rotationY = getPanoramaRotationRadians(panoramaYaw);
   const fallbackColor = useMemo(
     () => new Color(backgroundColor).multiplyScalar(Math.max(0, backgroundBrightness)),
     [backgroundBrightness, backgroundColor]
+  );
+  const panoramaBrightness = useMemo(
+    () => new Color("#ffffff").multiplyScalar(Math.max(0, backgroundBrightness)),
+    [backgroundBrightness]
   );
 
   useEffect(() => {
@@ -133,6 +139,7 @@ export function ViewportBackground({
         >
           <sphereGeometry args={[safeRadius, 96, 64]} />
           <meshBasicMaterial
+            color={panoramaBrightness}
             depthWrite={false}
             map={textureState.texture}
             side={BackSide}

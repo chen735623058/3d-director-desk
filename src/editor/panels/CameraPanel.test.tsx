@@ -199,6 +199,39 @@ it("activates the first existing motion point when opening the motion tab", asyn
   expect(screen.getByRole("button", { name: "选择轨迹点 K1" })).toHaveAttribute("aria-pressed", "true");
 });
 
+it("uses computed automatic arrival times when selecting motion points", async () => {
+  const user = userEvent.setup();
+  const state = useDirectorStore.getState();
+  useDirectorStore.setState({
+    ...state,
+    project: {
+      ...state.project,
+      cameras: state.project.cameras.map((camera) => ({
+        ...camera,
+        motionPath: {
+          duration: 10,
+          loop: false,
+          interpolation: "linear",
+          easing: "linear",
+          speedMode: "uniform",
+          keyframes: [
+            { id: "panel_uniform_1", time: 0, position: [0, 2, 8], target: [0, 1, 0], fov: 50 },
+            { id: "panel_uniform_2", time: 0.5, position: [1, 2, 8], target: [0, 1, 0], fov: 50 },
+            { id: "panel_uniform_3", time: 1, position: [10, 2, 8], target: [0, 1, 0], fov: 50 },
+          ],
+        },
+      })),
+    },
+  });
+  render(<CameraPanel />);
+
+  await user.click(screen.getByRole("button", { name: "轨迹" }));
+  await user.click(screen.getByRole("button", { name: "选择轨迹点 K2" }));
+
+  expect(useDirectorStore.getState().cameraMotionProgress).toBeCloseTo(0.1, 4);
+  expect(screen.getByRole("button", { name: "选择轨迹点 K2" })).toHaveTextContent("1.0s");
+});
+
 it("edits and removes the selected camera motion keyframe", async () => {
   const user = userEvent.setup();
   useDirectorStore.getState().addCameraMotionKeyframe("cam_1");

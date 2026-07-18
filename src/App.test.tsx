@@ -2,7 +2,7 @@ import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
 import { createInitialDirectorState, useDirectorStore } from "./editor/store/directorStore";
-import { writeDirectorDeskRecords } from "./editor/workspaces/directorDeskRegistry";
+import { readDirectorDeskRecords, writeDirectorDeskRecords } from "./editor/workspaces/directorDeskRegistry";
 
 vi.mock("./editor/canvas/DirectorCanvas", () => ({
   DirectorCanvas: () => <div data-testid="mock-director-canvas" />,
@@ -43,6 +43,9 @@ it("returns to a real home page that lists director desks 1 through 4", async ()
   expect(screen.getByText("掌镜快捷键")).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "路线编辑、监看与导出升级" })).toBeInTheDocument();
   expect(screen.getByText("主成片 FOV 与监看小窗 FOV 已分开设置，导出使用主成片 FOV")).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "共同完善 3D 导演台" })).toBeInTheDocument();
+  expect(screen.getByText("AIGC 耀光")).toBeInTheDocument();
+  expect(screen.getByText("抖音号：AIJPDM001")).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "键盘、鼠标与触控板操作" })).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "普通导演视角" })).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "掌镜模式" })).toBeInTheDocument();
@@ -73,11 +76,24 @@ it("renders the director desk header and view mode switch", () => {
   const { container } = render(<App />);
 
   expect(screen.getByText("3D导演台")).toBeInTheDocument();
+  expect(screen.getByLabelText("当前版本 v0.3.0")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "导演视角" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "第一视角" })).toBeInTheDocument();
   expect(container.querySelector(".top-bar-center .mode-toggle")).toBeInTheDocument();
   expect(screen.queryByLabelText("帮助")).not.toBeInTheDocument();
   expect(screen.getByLabelText("关闭")).toBeInTheDocument();
+});
+
+it("runs the benchmark as a temporary workspace without adding it to the director registry", () => {
+  window.history.replaceState({}, "", "/?instanceId=benchmark_test&benchmark=standard");
+
+  render(<App />);
+
+  expect(screen.getByRole("option", { name: "历史压力性能基准（临时）" })).toBeInTheDocument();
+  expect(readDirectorDeskRecords().some((record) => record.id === "benchmark_test")).toBe(false);
+  expect(useDirectorStore.getState().project.objects.filter((object) => object.kind === "character")).toHaveLength(25);
+  expect(useDirectorStore.getState().motionStudioOpen).toBe(true);
+  expect(useDirectorStore.getState().cameraMotionPlaying).toBe(true);
 });
 
 it("notifies the host canvas when the director desk app is ready", () => {

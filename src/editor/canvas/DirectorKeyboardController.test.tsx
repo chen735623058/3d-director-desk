@@ -110,8 +110,8 @@ describe("DirectorKeyboardController", () => {
     fireEvent.keyDown(window, { code: "KeyW" });
     act(() => frameCallback({}, 0.1));
 
-    expect(camera.position.z).toBeCloseTo(4);
-    expect(controls.target.z).toBeCloseTo(-1);
+    expect(camera.position.z).toBeCloseTo(4.5);
+    expect(controls.target.z).toBeCloseTo(-0.5);
     expect(camera.position.clone().sub(controls.target)).toEqual(originalOffset);
     expect(controls.update).toHaveBeenCalledTimes(1);
   });
@@ -157,13 +157,41 @@ describe("DirectorKeyboardController", () => {
 
     fireEvent.keyDown(window, { code: "Space" });
     act(() => frameCallback({}, 0.1));
-    expect(camera.position.y).toBeCloseTo(3);
-    expect(controls.target.y).toBeCloseTo(3);
+    expect(camera.position.y).toBeCloseTo(2.5);
+    expect(controls.target.y).toBeCloseTo(2.5);
 
     fireEvent.keyUp(window, { code: "Space" });
     fireEvent.keyDown(window, { code: "ShiftLeft" });
     act(() => frameCallback({}, 0.1));
     expect(camera.position.y).toBeCloseTo(2);
     expect(controls.target.y).toBeCloseTo(2);
+  });
+
+  it("caps long frame gaps so keyboard movement does not jump after a stall", () => {
+    render(<DirectorKeyboardController active controlsRef={controlsRef} moveSpeed={10} />);
+
+    fireEvent.keyDown(window, { code: "KeyW" });
+    act(() => frameCallback({}, 0.8));
+
+    expect(camera.position.z).toBeCloseTo(4.5);
+    expect(controls.target.z).toBeCloseTo(-0.5);
+  });
+
+  it("keeps held WASD movement continuous across normal and slow frames", () => {
+    render(<DirectorKeyboardController active controlsRef={controlsRef} moveSpeed={10} />);
+
+    fireEvent.keyDown(window, { code: "KeyW", repeat: false });
+    act(() => frameCallback({}, 1 / 60));
+    const afterFirstFrame = camera.position.z;
+    act(() => frameCallback({}, 1 / 30));
+    const afterSecondFrame = camera.position.z;
+    act(() => frameCallback({}, 0.2));
+    const afterSlowFrame = camera.position.z;
+
+    expect(afterFirstFrame).toBeLessThan(5);
+    expect(afterSecondFrame).toBeLessThan(afterFirstFrame);
+    expect(afterSlowFrame).toBeLessThan(afterSecondFrame);
+    expect(afterSecondFrame - afterSlowFrame).toBeCloseTo(0.5);
+    expect(controls.update).toHaveBeenCalledTimes(3);
   });
 });

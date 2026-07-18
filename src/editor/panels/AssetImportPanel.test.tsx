@@ -15,7 +15,7 @@ beforeEach(() => {
   });
 });
 
-it("imports a local OBJ/FBX model from the single local model entry", async () => {
+it("imports a local OBJ/FBX/GLB model from the single local model entry", async () => {
   const user = userEvent.setup();
   render(<AssetImportPanel />);
 
@@ -25,7 +25,7 @@ it("imports a local OBJ/FBX model from the single local model entry", async () =
   expect(screen.queryByText("导入道具模型")).not.toBeInTheDocument();
 
   const input = screen.getByLabelText("导入本地模型");
-  expect(input).toHaveAttribute("accept", ".fbx,.obj");
+  expect(input).toHaveAttribute("accept", ".fbx,.obj,.glb");
 
   const file = new File(["demo"], "football.obj", { type: "model/obj" });
   await user.upload(input, file);

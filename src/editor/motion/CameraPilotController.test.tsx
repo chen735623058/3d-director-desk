@@ -27,6 +27,7 @@ const INITIAL_SNAPSHOT: CameraMotionSnapshot = {
 };
 
 let camera: PerspectiveCamera;
+let scene: Scene;
 let canvas: HTMLCanvasElement;
 let frameCallback: FrameCallback;
 let pointerLockOwner: Element | null;
@@ -38,13 +39,11 @@ function renderController(overrides: {
   active?: boolean;
   onExit?: () => void;
   onRecord?: (snapshot: CameraMotionSnapshot) => void;
-  onSnapshotCommit?: (snapshot: CameraMotionSnapshot) => void;
   onToggleActionPlayback?: () => void;
 } = {}) {
   const callbacks = {
     onExit: overrides.onExit ?? vi.fn(),
     onRecord: overrides.onRecord ?? vi.fn(),
-    onSnapshotCommit: overrides.onSnapshotCommit ?? vi.fn(),
     onToggleActionPlayback: overrides.onToggleActionPlayback ?? vi.fn(),
   };
 
@@ -53,7 +52,6 @@ function renderController(overrides: {
       active={overrides.active ?? true}
       onExit={callbacks.onExit}
       onRecord={callbacks.onRecord}
-      onSnapshotCommit={callbacks.onSnapshotCommit}
       onToggleActionPlayback={callbacks.onToggleActionPlayback}
       snapshotRef={snapshotRef}
     />
@@ -101,10 +99,11 @@ beforeEach(() => {
     },
   };
 
+  scene = new Scene();
   fiberMocks.useThree.mockReturnValue({
     camera,
     gl: { domElement: canvas },
-    scene: new Scene(),
+    scene,
   });
   fiberMocks.useFrame.mockImplementation((callback: FrameCallback) => {
     frameCallback = callback;
@@ -113,6 +112,7 @@ beforeEach(() => {
   useDirectorStore.setState({
     cameraPilotHoveredTargetId: null,
     cameraPilotLockedTargetId: null,
+    cameraPilotLockedPoint: null,
     cameraPilotFollowTarget: false,
   });
 });
@@ -150,6 +150,21 @@ describe("CameraPilotController", () => {
 
     expect(onRecord).toHaveBeenCalledTimes(1);
     expect(onRecord).toHaveBeenCalledWith(snapshotRef.current);
+  });
+
+  it("locks the current empty-space focus with F and unlocks it with F again", () => {
+    renderController();
+
+    fireEvent.keyDown(window, { code: "KeyF", repeat: false });
+    expect(useDirectorStore.getState().cameraPilotLockedTargetId).toBeNull();
+    expect(useDirectorStore.getState().cameraPilotLockedPoint).toEqual([0, 2, 0]);
+
+    act(() => frameCallback({}, 1 / 60));
+    expect(snapshotRef.current.target).toEqual([0, 2, 0]);
+
+    fireEvent.keyUp(window, { code: "KeyF" });
+    fireEvent.keyDown(window, { code: "KeyF", repeat: false });
+    expect(useDirectorStore.getState().cameraPilotLockedPoint).toBeNull();
   });
 
   it("ignores mouse movement without Pointer Lock and rotates only after the canvas owns it", () => {
@@ -217,5 +232,50 @@ describe("CameraPilotController", () => {
 
     expect(slowFov).toBeGreaterThan(50);
     expect(fastFov - 50).toBeGreaterThan(slowFov - 50);
+  });
+
+  it("uses the selected turning sensitivity while orbiting a locked space point", () => {
+    useDirectorStore.setState({ viewportRotateSensitivity: 0.1 });
+    renderController();
+    pointerLockOwner = canvas;
+    fireEvent(document, new Event("pointerlockchange"));
+    fireEvent.keyDown(window, { code: "KeyF", repeat: false });
+
+    dispatchMouseMove(100, 0);
+    act(() => frameCallback({}, 1 / 60));
+    const slowHorizontalMove = Math.abs(camera.position.x);
+
+    camera.position.set(...INITIAL_SNAPSHOT.position);
+    camera.lookAt(...INITIAL_SNAPSHOT.target);
+    camera.updateMatrixWorld();
+    act(() => useDirectorStore.setState({ viewportRotateSensitivity: 1.5 }));
+    dispatchMouseMove(100, 0);
+    act(() => frameCallback({}, 1 / 60));
+    const fastHorizontalMove = Math.abs(camera.position.x);
+
+    expect(slowHorizontalMove).toBeGreaterThan(0);
+    expect(fastHorizontalMove).toBeGreaterThan(slowHorizontalMove * 5);
+  });
+
+  it("caps long frame gaps so WASD movement does not jump after a stall", () => {
+    renderController();
+
+    fireEvent.keyDown(window, { code: "KeyW" });
+    act(() => frameCallback({}, 0.8));
+
+    expect(snapshotRef.current.position[2]).toBeCloseTo(4.8);
+  });
+
+  it("does not traverse the whole scene again on every piloting frame", () => {
+    const traverse = vi.spyOn(scene, "traverse");
+    renderController();
+    const callsAfterMount = traverse.mock.calls.length;
+
+    for (let index = 0; index < 12; index += 1) {
+      act(() => frameCallback({}, 1 / 60));
+    }
+
+    expect(callsAfterMount).toBeGreaterThan(0);
+    expect(traverse).toHaveBeenCalledTimes(callsAfterMount);
   });
 });

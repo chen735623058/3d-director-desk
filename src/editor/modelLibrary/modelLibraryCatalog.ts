@@ -1,7 +1,10 @@
 import guoCharactersManifest from "./guoCharactersManifest.json";
 import guoPropsManifest from "./guoPropsManifest.json";
+import type { CharacterImportReadiness, CharacterRigProfile } from "../schema/directorProject";
+import { getGuoCharacterCompatibility } from "./guoCharacterCompatibility";
 
 export const LOCAL_GUO_ASSETS_AVAILABLE = __LOCAL_GUO_ASSETS_AVAILABLE__;
+export const LOCAL_MIXAMO_CHARACTER_AVAILABLE = __LOCAL_MIXAMO_CHARACTER_AVAILABLE__;
 
 export type ModelLibraryCategoryId = "characters" | "convenience" | "home" | "outdoor" | "tools" | "weapons" | "my-models";
 
@@ -19,10 +22,24 @@ export type ModelLibraryItem = {
   thumbUrl?: string;
   url: string;
   kind?: "character" | "prop";
+  characterRigProfile?: CharacterRigProfile;
+  characterImportReadiness?: CharacterImportReadiness;
+  characterOrientationCorrection?: [number, number, number];
 };
 
+export function getModelLibraryCharacterStatus(item: ModelLibraryItem) {
+  if (item.kind !== "character") return null;
+  if (item.characterImportReadiness === "ready") return "可用动作";
+  if (item.characterImportReadiness === "native-only") return "仅自带动作";
+  if (item.characterImportReadiness === "manual-mapping") return "需骨架映射";
+  if (item.characterImportReadiness === "static-only") return "仅静态";
+  return "未体检";
+}
+
 export const MODEL_LIBRARY_CATEGORIES: ModelLibraryCategory[] = [
-  ...(LOCAL_GUO_ASSETS_AVAILABLE ? [{ id: "characters" as const, label: "人物", directoryName: "人物" }] : []),
+  ...(LOCAL_GUO_ASSETS_AVAILABLE || LOCAL_MIXAMO_CHARACTER_AVAILABLE
+    ? [{ id: "characters" as const, label: "人物", directoryName: "人物" }]
+    : []),
   { id: "convenience", label: "便利生活", directoryName: "便利生活" },
   { id: "home", label: "居家生活", directoryName: "生活家居" },
   { id: "outdoor", label: "户外出行", directoryName: "户外出行" },
@@ -91,16 +108,47 @@ type GuoPropManifestItem = {
 };
 
 const localAssetUrl = (path: string) => `${import.meta.env.BASE_URL}local-assets/guo-3d-assets/${path}`;
+const localMixamoAssetUrl = (path: string) => `${import.meta.env.BASE_URL}local-assets/mixamo/${path}`;
 
-export const GUO_CHARACTER_MODELS: ModelLibraryItem[] = (guoCharactersManifest.items as GuoCharacterManifestItem[]).map((item) => ({
-  id: `guo-character:${item.id}`,
-  kind: "character",
-  categoryId: "characters",
-  fileName: item.localModelPath.split("/").pop() ?? `${item.id}.fbx`,
-  name: item.label,
-  url: localAssetUrl(`guo-skeleton-models/${item.localModelPath}`),
-  thumbUrl: localAssetUrl(`guo-skeleton-models/${item.localThumbnailPath}`),
-}));
+export const MIXAMO_CHARACTER_MODELS: ModelLibraryItem[] = LOCAL_MIXAMO_CHARACTER_AVAILABLE
+  ? [{
+      id: "mixamo-character:camille",
+      kind: "character",
+      categoryId: "characters",
+      fileName: "camille.fbx",
+      name: "Camille（Mixamo）",
+      url: localMixamoAssetUrl("characters/camille.fbx"),
+      characterRigProfile: "mixamo",
+      characterImportReadiness: "ready",
+      characterOrientationCorrection: [0, 0, 0],
+    }, {
+      id: "rigged-character:robot-expressive",
+      kind: "character",
+      categoryId: "characters",
+      fileName: "robot-expressive.glb",
+      name: "表情机器人（自带动作）",
+      url: localMixamoAssetUrl("characters/robot-expressive.glb"),
+      characterRigProfile: "mixamo",
+      characterImportReadiness: "ready",
+      characterOrientationCorrection: [0, 0, 0],
+    }]
+  : [];
+
+export const GUO_CHARACTER_MODELS: ModelLibraryItem[] = (guoCharactersManifest.items as GuoCharacterManifestItem[]).map((item) => {
+  const compatibility = getGuoCharacterCompatibility(item.id);
+  return {
+    id: `guo-character:${item.id}`,
+    kind: "character",
+    categoryId: "characters",
+    fileName: item.localModelPath.split("/").pop() ?? `${item.id}.fbx`,
+    name: item.label,
+    url: localAssetUrl(`guo-skeleton-models/${item.localModelPath}`),
+    thumbUrl: localAssetUrl(`guo-skeleton-models/${item.localThumbnailPath}`),
+    characterRigProfile: compatibility.rigProfile,
+    characterImportReadiness: compatibility.readiness,
+    characterOrientationCorrection: compatibility.orientationCorrection,
+  };
+});
 
 function mapGuoPropCategory(categoryId: string): ModelLibraryCategoryId {
   if (categoryId === "furniture") return "home";
@@ -122,7 +170,7 @@ export const GUO_PROP_MODELS: ModelLibraryItem[] = (guoPropsManifest.items as Gu
 
 export function getModelLibraryItems() {
   const localModels = LOCAL_GUO_ASSETS_AVAILABLE ? [...GUO_CHARACTER_MODELS, ...GUO_PROP_MODELS] : [];
-  return [...localModels, ...BUILTIN_LIFE_MODELS].sort((a, b) => {
+  return [...MIXAMO_CHARACTER_MODELS, ...localModels, ...BUILTIN_LIFE_MODELS].sort((a, b) => {
     const categoryIndexA = MODEL_LIBRARY_CATEGORIES.findIndex((category) => category.id === a.categoryId);
     const categoryIndexB = MODEL_LIBRARY_CATEGORIES.findIndex((category) => category.id === b.categoryId);
 

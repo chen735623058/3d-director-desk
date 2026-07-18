@@ -1,10 +1,13 @@
 import { Html, Line, TransformControls, type TransformControlsProps } from "@react-three/drei";
 import { useLoader, type ThreeEvent } from "@react-three/fiber";
-import { Suspense, useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from "react";
 import { Box3, Color, Matrix4, Quaternion, Vector3, type Group, type Object3D } from "three";
 import type { TransformControls as TransformControlsImpl } from "three-stdlib";
+import type { Line2 } from "three-stdlib";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
 import type {
   DirectorAssetRef,
   DirectorCameraShot,
@@ -14,11 +17,18 @@ import type {
   GeometryPrimitiveType,
   SceneSettings,
 } from "../schema/directorProject";
-import { getCameraMotionPath, getCameraMotionSnapshot, sampleCameraMotionPath } from "../schema/cameraMotion";
+import {
+  getCameraMotionActiveKeyframeIndex,
+  getCameraMotionKeyframeArrivalProgress,
+  getCameraMotionPath,
+  getCameraMotionSnapshot,
+  sampleCameraMotionPath,
+} from "../schema/cameraMotion";
 import {
   getObjectMotionActionPresetId,
   getObjectMotionSnapshot,
   getObjectMotionSpeed,
+  getObjectMotionTimingSample,
   normalizeObjectMotionPath,
   sampleObjectMotionPath,
 } from "../schema/objectMotion";
@@ -40,6 +50,19 @@ import { constrainCameraPosition, constrainObjectMotionTransform } from "../sche
 import { getUE4GroundedLabelY } from "../runtime/ue4Mannequin/ue4MannequinRig";
 import { getEffectiveGroundOpacity } from "./panoramaMath";
 import { getCrowdAnchorTransform } from "../store/directorStore";
+import {
+  DIRECTOR_CHARACTER_BONE_MAP_USER_DATA_KEY,
+  getDirectorObjectSceneNodeName,
+} from "../runtime/semanticBodyTracking";
+import { useResolvedLocalAssetUrl } from "../loaders/useResolvedLocalAssetUrl";
+import { parseImportedCharacterActionId } from "../schema/importedCharacterAction";
+import { GROUND_PLANE_SIZE, createGroundMaterialTexture, getGroundMaterialPreset } from "./groundMaterialPresets";
+import { getRuntimePlaybackProgress, subscribeRuntimePlayback } from "../runtime/playbackRuntime";
+import { disposeIsolatedModelMaterials, isolateAndTintModelMaterials } from "../runtime/modelMaterialTint";
+import {
+  createCameraTrackingSmoothingState,
+  getRuntimeCameraPlaybackSnapshot,
+} from "../runtime/cameraBodyTracking";
 
 export { getEffectiveGroundOpacity, getPanoramaRotationRadians } from "./panoramaMath";
 
@@ -380,9 +403,9 @@ export function getViewportCameraHitArea(): CameraHitArea {
   };
 }
 
-function NormalizedImportedObject({ object }: { object: Object3D }) {
+function NormalizedImportedObject({ color, object }: { color?: string; object: Object3D }) {
   const { clone, normalization } = useMemo(() => {
-    const clonedObject = object.clone(true);
+    const clonedObject = cloneSkeleton(object) as Object3D;
     clonedObject.updateMatrixWorld(true);
 
     return {
@@ -390,6 +413,9 @@ function NormalizedImportedObject({ object }: { object: Object3D }) {
       normalization: getImportedModelNormalization(new Box3().setFromObject(clonedObject)),
     };
   }, [object]);
+
+  useLayoutEffect(() => isolateAndTintModelMaterials(clone, color), [clone, color]);
+  useEffect(() => () => disposeIsolatedModelMaterials(clone), [clone]);
 
   return (
     <group
@@ -401,28 +427,37 @@ function NormalizedImportedObject({ object }: { object: Object3D }) {
   );
 }
 
-function FbxModel({ url }: { url: string }) {
+function FbxModel({ color, url }: { color?: string; url: string }) {
   const object = useLoader(FBXLoader, url);
 
-  return <NormalizedImportedObject object={object} />;
+  return <NormalizedImportedObject color={color} object={object} />;
 }
 
-function ObjModel({ url }: { url: string }) {
+function ObjModel({ color, url }: { color?: string; url: string }) {
   const object = useLoader(OBJLoader, url);
 
-  return <NormalizedImportedObject object={object} />;
+  return <NormalizedImportedObject color={color} object={object} />;
+}
+
+function GlbModel({ color, url }: { color?: string; url: string }) {
+  const loaded = useLoader(GLTFLoader, url);
+
+  return <NormalizedImportedObject color={color} object={loaded.scene} />;
 }
 
 function ImportedModel({
+  color,
   fileName,
   url,
 }: {
+  color?: string;
   fileName: string;
   url: string;
 }) {
-  if (url.startsWith("builtin://life/")) return <BuiltInLifeModel modelId={fileName} />;
-  if (/\.fbx$/i.test(fileName)) return <FbxModel url={url} />;
-  if (/\.obj$/i.test(fileName)) return <ObjModel url={url} />;
+  if (url.startsWith("builtin://life/")) return <BuiltInLifeModel color={color} modelId={fileName} />;
+  if (/\.fbx$/i.test(fileName)) return <FbxModel color={color} url={url} />;
+  if (/\.obj$/i.test(fileName)) return <ObjModel color={color} url={url} />;
+  if (/\.glb$/i.test(fileName)) return <GlbModel color={color} url={url} />;
   return null;
 }
 
@@ -491,6 +526,8 @@ function GeometryPrimitiveModel({
 function ObjectSceneNode({
   asset,
   item,
+  motionObjects,
+  motionScene,
   selected,
   showLabels,
   transformMode,
@@ -500,10 +537,13 @@ function ObjectSceneNode({
   motionPhase = 0,
   motionWalking = false,
   motionTimeSeconds = 0,
+  motionDurationSeconds = 6,
   motionProgress = 0,
 }: {
   asset?: DirectorAssetRef;
   item: DirectorObject;
+  motionObjects: DirectorObject[];
+  motionScene: SceneSettings;
   selected: boolean;
   showLabels: boolean;
   transformMode: TransformMode;
@@ -513,6 +553,7 @@ function ObjectSceneNode({
   motionPhase?: number;
   motionWalking?: boolean;
   motionTimeSeconds?: number;
+  motionDurationSeconds?: number;
   motionProgress?: number;
 }) {
   const groupRef = useRef<Group>(null!);
@@ -523,7 +564,12 @@ function ObjectSceneNode({
   const updateObjectTransform = useDirectorStore((state) => state.updateObjectTransform);
   const pilotHoveredTargetId = useDirectorStore((state) => state.cameraPilotHoveredTargetId);
   const pilotLockedTargetId = useDirectorStore((state) => state.cameraPilotLockedTargetId);
+  const animationAssets = useDirectorStore((state) => state.project.animationAssets);
+  const characterActionPreview = useDirectorStore((state) => state.characterActionPreview);
+  const initialRouteActionPresetId = getObjectMotionActionPresetId(item, motionProgress, motionDurationSeconds);
+  const [runtimeActionPresetId, setRuntimeActionPresetId] = useState(initialRouteActionPresetId);
   const isImportedModel = asset?.sourceType === "model";
+  const resolvedAssetUrl = useResolvedLocalAssetUrl(isImportedModel ? asset : undefined);
   const characterLabelKey = `${item.id}:${item.bodyType ?? ""}:${item.characterRig?.rigType ?? ""}`;
   const fallbackCharacterLabelY =
     item.kind === "character"
@@ -535,9 +581,21 @@ function ObjectSceneNode({
     measuredCharacterLabel?.key === characterLabelKey ? measuredCharacterLabel.y : fallbackCharacterLabelY;
   const focusOffsetY = item.kind === "character" ? Math.max(0.8, characterLabelY * 0.58) : 0.75;
   const pilotTargetState = pilotLockedTargetId === item.id ? "locked" : pilotHoveredTargetId === item.id ? "hovered" : null;
+  const routeActionPresetId = characterActionPreview?.objectId === item.id
+    ? characterActionPreview.actionPresetId
+    : runtimeActionPresetId;
+  const resolvedActionPresetId = routeActionPresetId ?? (motionWalking ? "walk-cycle" : null);
+  const importedActionRef = parseImportedCharacterActionId(resolvedActionPresetId);
+  const importedAnimationAsset = importedActionRef
+    ? (animationAssets ?? []).find(
+        (animationAsset) => animationAsset.id === importedActionRef.animationAssetId
+      )
+    : undefined;
+  const importedAnimationClip = importedAnimationAsset?.clips.find((clip) => clip.id === importedActionRef?.clipId);
+  const resolvedAnimationUrl = useResolvedLocalAssetUrl(importedAnimationAsset);
   const animatedCharacterRig = useMemo(() => {
     if (!item.characterRig) return item.characterRig;
-    const actionPresetId = getObjectMotionActionPresetId(item, motionProgress);
+    const actionPresetId = routeActionPresetId;
     if (actionPresetId) {
       return {
         ...item.characterRig,
@@ -566,7 +624,7 @@ function ObjectSceneNode({
         "rightKnee.bend": rightKnee,
       },
     };
-  }, [item, motionPhase, motionProgress, motionTimeSeconds, motionWalking]);
+  }, [item, motionPhase, motionTimeSeconds, motionWalking, routeActionPresetId]);
   const handleCharacterLabelAnchorYChange = useCallback(
     (anchorY: number) => {
       setMeasuredCharacterLabel((current) => {
@@ -585,6 +643,25 @@ function ObjectSceneNode({
     [characterLabelKey]
   );
 
+  useEffect(() => subscribeRuntimePlayback((progress) => {
+    const group = groupRef.current;
+    if (!group?.position?.set || !group.rotation?.set || !group.scale?.set) return;
+    if (item.motionPath?.keyframes.length) {
+      const nextTransform = constrainObjectMotionTransform(
+        item,
+        getObjectMotionSnapshot(item, progress, motionDurationSeconds),
+        motionScene,
+        motionObjects
+      );
+      group.position.set(...nextTransform.position);
+      group.rotation.set(...nextTransform.rotation);
+      group.scale.set(...nextTransform.scale);
+      group.updateMatrixWorld(true);
+    }
+    const nextAction = getObjectMotionActionPresetId(item, progress, motionDurationSeconds);
+    setRuntimeActionPresetId((current) => current === nextAction ? current : nextAction);
+  }), [item, motionDurationSeconds, motionObjects, motionScene]);
+
   function commitTransformFromViewport() {
     const group = groupRef.current;
     if (!group) return;
@@ -599,7 +676,7 @@ function ObjectSceneNode({
   const node = (
     <group
       ref={groupRef}
-      name={`director-object-${item.id}`}
+      name={getDirectorObjectSceneNodeName(item.id)}
       position={item.transform.position}
       rotation={item.transform.rotation}
       scale={item.transform.scale}
@@ -611,6 +688,7 @@ function ObjectSceneNode({
         directorObjectId: item.id,
         directorObjectName: item.name,
         directorFocusOffset: [0, focusOffsetY, 0],
+        [DIRECTOR_CHARACTER_BONE_MAP_USER_DATA_KEY]: asset?.characterBoneMap,
       }}
     >
       {pilotTargetState ? (
@@ -628,21 +706,34 @@ function ObjectSceneNode({
         <>
           <Suspense fallback={null}>
             <CharacterModel
-              assetUrl={isImportedModel ? asset?.url : undefined}
+              actionPresetId={resolvedActionPresetId}
+              animationTimeSeconds={motionTimeSeconds}
+              assetUrl={isImportedModel ? resolvedAssetUrl : undefined}
+              assetFormat={asset?.modelFormat}
+              externalAnimation={resolvedAnimationUrl && importedAnimationAsset && importedAnimationClip
+                ? {
+                    url: resolvedAnimationUrl,
+                    format: importedAnimationAsset.modelFormat,
+                    clipName: importedAnimationClip.name,
+                  }
+                : null}
+              orientationCorrection={asset?.characterOrientationCorrection}
+              boneMap={asset?.characterBoneMap}
               bodyType={item.bodyType}
               color={item.color}
               motionWalking={motionWalking}
               onLabelAnchorYChange={handleCharacterLabelAnchorYChange}
               rigState={animatedCharacterRig}
+              runtimeMotion={{ duration: motionDurationSeconds, object: item }}
             />
           </Suspense>
           {showLabels ? (
             <ViewportObjectLabel position={[0, characterLabelY, 0]}>{item.name}</ViewportObjectLabel>
           ) : null}
         </>
-      ) : isImportedModel && asset ? (
+      ) : isImportedModel && asset && resolvedAssetUrl ? (
         <Suspense fallback={null}>
-          <ImportedModel fileName={asset.fileName} url={asset.url} />
+          <ImportedModel color={item.color} fileName={asset.fileName} url={resolvedAssetUrl} />
         </Suspense>
       ) : item.kind === "prop" && item.geometryType ? (
         <GeometryPrimitiveModel color={item.color} geometryType={item.geometryType} />
@@ -859,6 +950,7 @@ function ViewportCameraRig({
 function CameraMotionKeyframeHandle({
   cameraId,
   keyframe,
+  arrivalProgress,
   index,
   selected,
   showTransformControls,
@@ -868,6 +960,7 @@ function CameraMotionKeyframeHandle({
 }: {
   cameraId: string;
   keyframe: DirectorCameraMotionKeyframe;
+  arrivalProgress: number;
   index: number;
   selected: boolean;
   showTransformControls: boolean;
@@ -883,7 +976,7 @@ function CameraMotionKeyframeHandle({
   function selectKeyframe(event: ThreeEvent<MouseEvent>) {
     event.stopPropagation();
     selectCameraMotionKeyframe(keyframe.id);
-    setCameraMotionProgress(keyframe.time);
+    setCameraMotionProgress(arrivalProgress);
   }
 
   function commitKeyframePosition() {
@@ -906,6 +999,7 @@ function CameraMotionKeyframeHandle({
         <meshBasicMaterial
           color={playbackState === "reached" ? "#FFD08A" : playbackState === "approaching" ? "#FFF1C7" : selected ? "#FFD09A" : "#F5A65B"}
           depthTest={false}
+          visible={!showTransformControls}
         />
       </mesh>
       {playbackState === "approaching" ? (
@@ -1004,10 +1098,97 @@ function CameraMotionSelectionTransform({
   );
 }
 
-function CameraMotionPathRig({ camera, scene, translationSnap }: { camera: DirectorCameraShot; scene: SceneSettings; translationSnap: number | null }) {
+function RuntimeCameraMotionPlayhead({
+  camera,
+  objects,
+  sceneRootRef,
+  sceneSettings,
+}: {
+  camera: DirectorCameraShot;
+  objects: DirectorObject[];
+  sceneRootRef: MutableRefObject<Group | null>;
+  sceneSettings: SceneSettings;
+}) {
+  const groupRef = useRef<Group>(null);
+  const directionRef = useRef<Line2>(null);
+  const smoothingStateRef = useRef(createCameraTrackingSmoothingState());
+  const initialSnapshot = useMemo(() => {
+    const snapshot = getCameraMotionSnapshot(camera, getRuntimePlaybackProgress());
+    const trackingTarget = getAnimatedCameraFocusTarget(camera, objects, getRuntimePlaybackProgress());
+    return trackingTarget ? { ...snapshot, target: trackingTarget } : snapshot;
+  }, [camera, objects]);
+
+  const updatePlayhead = useCallback((progress: number) => {
+    const group = groupRef.current;
+    const sceneRoot = sceneRootRef.current;
+    if (!group || !sceneRoot) return;
+    const snapshot = getRuntimeCameraPlaybackSnapshot({
+      camera,
+      objects,
+      progress,
+      scene: sceneRoot,
+      sceneSettings,
+      smoothingState: smoothingStateRef.current,
+    });
+    group.position.set(...snapshot.position);
+    group.updateMatrixWorld(true);
+    directionRef.current?.geometry.setPositions([
+      0, 0, 0,
+      snapshot.target[0] - snapshot.position[0],
+      snapshot.target[1] - snapshot.position[1],
+      snapshot.target[2] - snapshot.position[2],
+    ]);
+    directionRef.current?.computeLineDistances();
+  }, [camera, objects, sceneRootRef, sceneSettings]);
+
+  useLayoutEffect(() => updatePlayhead(getRuntimePlaybackProgress()), [updatePlayhead]);
+  useEffect(() => subscribeRuntimePlayback(updatePlayhead), [updatePlayhead]);
+
+  return (
+    <group
+      ref={groupRef}
+      name="camera-motion-playhead"
+      position={initialSnapshot.position}
+      userData={{ [HIDE_FROM_VIEWPORT_CAPTURE_KEY]: true }}
+    >
+      <mesh>
+        <sphereGeometry args={[0.12, 20, 14]} />
+        <meshBasicMaterial color="#FFFFFF" depthTest={false} />
+      </mesh>
+      <Line
+        ref={directionRef}
+        color="#FFFFFF"
+        lineWidth={2}
+        name="camera-motion-playhead-direction"
+        opacity={0.72}
+        points={[
+          [0, 0, 0],
+          [
+            initialSnapshot.target[0] - initialSnapshot.position[0],
+            initialSnapshot.target[1] - initialSnapshot.position[1],
+            initialSnapshot.target[2] - initialSnapshot.position[2],
+          ],
+        ]}
+        transparent
+      />
+    </group>
+  );
+}
+
+function CameraMotionPathRig({
+  camera,
+  scene,
+  sceneRootRef,
+  translationSnap,
+}: {
+  camera: DirectorCameraShot;
+  scene: SceneSettings;
+  sceneRootRef: MutableRefObject<Group | null>;
+  translationSnap: number | null;
+}) {
   const selectedCameraKeyframeId = useDirectorStore((state) => state.selectedCameraKeyframeId);
   const selectedCameraKeyframeIds = useDirectorStore((state) => state.selectedCameraKeyframeIds);
-  const cameraMotionProgress = useDirectorStore((state) => state.cameraMotionProgress);
+  const cameraMotionProgress = getRuntimePlaybackProgress();
   const cameraMotionPlaying = useDirectorStore((state) => state.cameraMotionPlaying);
   const motionStudioOpen = useDirectorStore((state) => state.motionStudioOpen);
   const objects = useDirectorStore((state) => state.project.objects);
@@ -1027,15 +1208,10 @@ function CameraMotionPathRig({ camera, scene, translationSnap }: { camera: Direc
     [camera, objects, scene]
   );
   const timelinePreviewActive = cameraMotionPlaying || cameraMotionProgress > 0.0001;
-  const activeIndex = useMemo(() => {
-    if (motionPath.keyframes.length === 0) return -1;
-    let index = 0;
-    for (let cursor = 1; cursor < motionPath.keyframes.length; cursor += 1) {
-      if (cameraMotionProgress + 0.0001 < motionPath.keyframes[cursor].time) break;
-      index = cursor;
-    }
-    return index;
-  }, [cameraMotionProgress, motionPath.keyframes]);
+  const activeIndex = useMemo(
+    () => getCameraMotionActiveKeyframeIndex(camera, cameraMotionProgress),
+    [camera, cameraMotionProgress]
+  );
   const activeSegmentPoints = useMemo(() => {
     const pathStart = motionPath.keyframes[0]?.time ?? 0;
     const pathEnd = Math.max(pathStart, cameraMotionProgress);
@@ -1046,13 +1222,6 @@ function CameraMotionPathRig({ camera, scene, translationSnap }: { camera: Direc
       return constrainCameraPosition(getCameraMotionSnapshot(camera, progress).position, scene, objects);
     });
   }, [activeIndex, camera, cameraMotionProgress, motionPath.keyframes, objects, scene, timelinePreviewActive]);
-  const playhead = useMemo(() => {
-    if (!timelinePreviewActive) return null;
-    const rawSnapshot = getCameraMotionSnapshot(camera, cameraMotionProgress);
-    const snapshot = { ...rawSnapshot, position: constrainCameraPosition(rawSnapshot.position, scene, objects) };
-    const trackingTarget = getAnimatedCameraFocusTarget(camera, objects, cameraMotionProgress);
-    return trackingTarget ? { ...snapshot, target: trackingTarget } : snapshot;
-  }, [camera, cameraMotionProgress, objects, scene, timelinePreviewActive]);
   if (motionPath.keyframes.length === 0) return null;
 
   return (
@@ -1082,6 +1251,7 @@ function CameraMotionPathRig({ camera, scene, translationSnap }: { camera: Direc
         <CameraMotionKeyframeHandle
           key={keyframe.id}
           cameraId={camera.id}
+          arrivalProgress={getCameraMotionKeyframeArrivalProgress(camera, index)}
           index={index}
           keyframe={keyframe}
           playbackState={
@@ -1104,32 +1274,13 @@ function CameraMotionPathRig({ camera, scene, translationSnap }: { camera: Direc
         keyframes={selectedKeyframes}
         translationSnap={translationSnap}
       />
-      {playhead ? (
-        <group
-          name="camera-motion-playhead"
-          position={playhead.position}
-          userData={{ [HIDE_FROM_VIEWPORT_CAPTURE_KEY]: true }}
-        >
-          <mesh>
-            <sphereGeometry args={[0.12, 20, 14]} />
-            <meshBasicMaterial color="#FFFFFF" depthTest={false} />
-          </mesh>
-          <Line
-            color="#FFFFFF"
-            lineWidth={2}
-            name="camera-motion-playhead-direction"
-            opacity={0.72}
-            points={[
-              [0, 0, 0],
-              [
-                playhead.target[0] - playhead.position[0],
-                playhead.target[1] - playhead.position[1],
-                playhead.target[2] - playhead.position[2],
-              ],
-            ]}
-            transparent
-          />
-        </group>
+      {timelinePreviewActive ? (
+        <RuntimeCameraMotionPlayhead
+          camera={camera}
+          objects={objects}
+          sceneRootRef={sceneRootRef}
+          sceneSettings={scene}
+        />
       ) : null}
     </group>
   );
@@ -1139,6 +1290,7 @@ function CharacterRoutePointHandle({
   characterId,
   keyframe,
   index,
+  active,
   selected,
   translationSnap,
   transformMode,
@@ -1146,6 +1298,7 @@ function CharacterRoutePointHandle({
   characterId: string;
   keyframe: DirectorObjectMotionKeyframe;
   index: number;
+  active: boolean;
   selected: boolean;
   translationSnap: number | null;
   transformMode: TransformMode;
@@ -1185,9 +1338,39 @@ function CharacterRoutePointHandle({
         <sphereGeometry args={[selected ? 0.2 : 0.15, 20, 14]} />
         <meshBasicMaterial color={selected ? "#B9F7D0" : "#4ADE80"} depthTest={false} />
       </mesh>
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.015, 0]}>
-        <ringGeometry args={[selected ? 0.25 : 0.2, selected ? 0.29 : 0.24, 24]} />
-        <meshBasicMaterial color="#4ADE80" depthTest={false} transparent opacity={0.8} />
+      <mesh
+        name={`${keyframe.id}-character-route-ring`}
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[0, 0.018, 0]}
+        renderOrder={20}
+      >
+        <ringGeometry args={[
+          selected ? 0.3 : 0.27,
+          selected ? 0.43 : 0.37,
+          36,
+        ]} />
+        <meshBasicMaterial
+          color={active ? "#F4FFF7" : selected ? "#B9F7D0" : "#4ADE80"}
+          depthTest={false}
+          depthWrite={false}
+          transparent
+          opacity={1}
+        />
+      </mesh>
+      <mesh
+        name={`${keyframe.id}-character-route-ring-glow`}
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[0, 0.016, 0]}
+        renderOrder={19}
+      >
+        <ringGeometry args={[selected ? 0.44 : 0.38, selected ? 0.5 : 0.44, 36]} />
+        <meshBasicMaterial
+          color={active ? "#FFFFFF" : "#166534"}
+          depthTest={false}
+          depthWrite={false}
+          transparent
+          opacity={active || selected ? 0.95 : 0.72}
+        />
       </mesh>
       <ViewportObjectLabel position={[0, 0.38, 0]}>
         <span className="camera-motion-point-label">{index + 1}</span>
@@ -1211,6 +1394,7 @@ function CharacterRoutePointHandle({
 
 function CharacterRouteRig({
   character,
+  duration,
   progress,
   playing,
   showHandles = true,
@@ -1220,6 +1404,7 @@ function CharacterRouteRig({
   translationSnap,
 }: {
   character: DirectorObject;
+  duration: number;
   progress: number;
   playing: boolean;
   showHandles?: boolean;
@@ -1234,10 +1419,9 @@ function CharacterRouteRig({
     [character.motionPath, character.transform]
   );
   const activeIndex = useMemo(() => {
-    let index = 0;
-    while (index < path.keyframes.length - 2 && progress >= path.keyframes[index + 1].time) index += 1;
-    return index;
-  }, [path.keyframes, progress]);
+    const timing = getObjectMotionTimingSample(character, progress, duration);
+    return timing?.holdingPointIndex ?? timing?.segment ?? 0;
+  }, [character, duration, progress]);
   const activePoints = useMemo(() => {
     if (!playing || path.keyframes.length < 2) return [];
     const end = Math.max(path.keyframes[0].time, progress);
@@ -1245,17 +1429,17 @@ function CharacterRouteRig({
     return Array.from({ length: count }, (_, index) =>
       constrainObjectMotionTransform(
         character,
-        getObjectMotionSnapshot(character, (end * index) / (count - 1)),
+        getObjectMotionSnapshot(character, (end * index) / (count - 1), duration),
         scene,
         objects
       ).position
     );
-  }, [character, objects, path.keyframes, playing, progress, scene]);
+  }, [character, duration, objects, path.keyframes, playing, progress, scene]);
   const routePoints = useMemo(
-    () => sampleObjectMotionPath(character, 96).map((position) =>
+    () => sampleObjectMotionPath(character, 96, duration).map((position) =>
       constrainObjectMotionTransform(character, { ...character.transform, position }, scene, objects).position
     ),
-    [character, objects, scene]
+    [character, duration, objects, scene]
   );
 
   if (path.keyframes.length === 0) return null;
@@ -1273,13 +1457,14 @@ function CharacterRouteRig({
           characterId={character.id}
           index={index}
           keyframe={keyframe}
+          active={index === activeIndex}
           selected={selectedObjectMotionKeyframeId === keyframe.id}
           transformMode={transformMode}
           translationSnap={translationSnap}
         />
       )) : null}
       {playing && path.keyframes.length >= 2 ? (
-        <group position={getObjectMotionSnapshot(character, progress).position}>
+        <group position={getObjectMotionSnapshot(character, progress, duration).position}>
           <mesh>
             <sphereGeometry args={[0.11, 18, 12]} />
             <meshBasicMaterial color="#FFFFFF" depthTest={false} />
@@ -1294,6 +1479,7 @@ function CharacterRouteRig({
 export type SceneRootRenderMode = "interactive" | "director-monitor" | "clean-camera";
 
 export function SceneRoot({ renderMode = "interactive" }: { renderMode?: SceneRootRenderMode }) {
+  const sceneRootRef = useRef<Group>(null);
   const scene = useDirectorStore((state) => state.project.scene);
   const assets = useDirectorStore((state) => state.project.assets);
   const objects = useDirectorStore((state) => state.project.objects);
@@ -1305,7 +1491,7 @@ export function SceneRoot({ renderMode = "interactive" }: { renderMode?: SceneRo
   const motionStudioOpen = useDirectorStore((state) => state.motionStudioOpen);
   const cameraPilotMode = useDirectorStore((state) => state.cameraPilotMode);
   const activeCameraId = useDirectorStore((state) => state.project.activeCameraId);
-  const cameraMotionProgress = useDirectorStore((state) => state.cameraMotionProgress);
+  const cameraMotionProgress = getRuntimePlaybackProgress();
   const cameraMotionPlaying = useDirectorStore((state) => state.cameraMotionPlaying);
   const selectedCrowdId = useDirectorStore((state) => state.selectedCrowdId);
   const transformMode = useDirectorStore((state) => state.transformMode);
@@ -1315,10 +1501,26 @@ export function SceneRoot({ renderMode = "interactive" }: { renderMode?: SceneRo
   const interactive = renderMode === "interactive";
   const effectiveViewMode = renderMode === "clean-camera" ? "camera" : renderMode === "director-monitor" ? "director" : viewMode;
   const translationSnap = scene.snapToGrid ? 1 : null;
-  const groundColor = useMemo(
-    () => `#${new Color(scene.groundColor).multiplyScalar(Math.max(0, scene.groundBrightness)).getHexString()}`,
-    [scene.groundBrightness, scene.groundColor]
+  const groundMaterialPreset = useMemo(
+    () => getGroundMaterialPreset(scene.groundMaterialPreset),
+    [scene.groundMaterialPreset]
   );
+  const groundTexture = useMemo(
+    () => scene.showGround
+      ? createGroundMaterialTexture(scene.groundMaterialPreset, GROUND_PLANE_SIZE, scene.groundTextureScale)
+      : null,
+    [scene.groundMaterialPreset, scene.groundTextureScale, scene.showGround]
+  );
+  const groundColor = useMemo(
+    () => {
+      const selectedColor = scene.groundColor.toLowerCase() === "#303640"
+        ? groundMaterialPreset.baseColor
+        : scene.groundColor;
+      return `#${new Color(selectedColor).multiplyScalar(Math.max(0, scene.groundBrightness)).getHexString()}`;
+    },
+    [groundMaterialPreset.baseColor, scene.groundBrightness, scene.groundColor]
+  );
+  useEffect(() => () => groundTexture?.dispose(), [groundTexture]);
   const assetsById = useMemo(() => new Map(assets.map((item) => [item.id, item])), [assets]);
   const cameraObjectsByCameraId = useMemo(() => {
     return new Map(
@@ -1354,19 +1556,23 @@ export function SceneRoot({ renderMode = "interactive" }: { renderMode?: SceneRo
 
   return (
     <group
+      ref={sceneRootRef}
       position={scene.position}
       rotation={scene.rotation}
       scale={[scene.scale, scene.scale, scene.scale]}
     >
       {scene.showGround ? (
         <mesh position={[0, scene.groundHeight, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-          <planeGeometry args={[200, 200]} />
-          <meshBasicMaterial
+          <planeGeometry args={[GROUND_PLANE_SIZE, GROUND_PLANE_SIZE]} />
+          <meshStandardMaterial
             color={groundColor}
+            map={groundTexture}
+            metalness={groundMaterialPreset.metalness}
             opacity={getEffectiveGroundOpacity(scene.groundOpacity, false)}
             polygonOffset
             polygonOffsetFactor={1}
             polygonOffsetUnits={1}
+            roughness={groundMaterialPreset.roughness}
             transparent
           />
         </mesh>
@@ -1376,9 +1582,12 @@ export function SceneRoot({ renderMode = "interactive" }: { renderMode?: SceneRo
         .map((item) => {
           const asset = item.assetRefId ? assetsById.get(item.assetRefId) : undefined;
           const hasMotion = Boolean(item.motionPath?.keyframes?.length);
-          const motionWalking = cameraMotionPlaying && item.kind === "character" && hasMotion && getObjectMotionSpeed(item, cameraMotionProgress) > 0.05;
+          const motionWalking = cameraMotionPlaying
+            && item.kind === "character"
+            && hasMotion
+            && getObjectMotionSpeed(item, cameraMotionProgress, activeMotionDuration) > 0.05;
           const motionTransform = hasMotion
-            ? getObjectMotionSnapshot(item, cameraMotionProgress)
+            ? getObjectMotionSnapshot(item, cameraMotionProgress, activeMotionDuration)
             : item.transform;
           const renderedItem = {
             ...item,
@@ -1390,14 +1599,23 @@ export function SceneRoot({ renderMode = "interactive" }: { renderMode?: SceneRo
               key={item.id}
               asset={asset}
               item={renderedItem}
+              motionObjects={objects}
+              motionScene={scene}
               motionPhase={cameraMotionProgress * activeMotionDuration * 7.2}
+              motionDurationSeconds={activeMotionDuration}
               motionTimeSeconds={cameraMotionProgress * activeMotionDuration}
               motionProgress={cameraMotionProgress}
               motionWalking={motionWalking}
               selected={interactive && !item.crowdId && item.id === selectedObjectId}
               showLabels={interactive && scene.showLabels && cameraPilotMode === "idle"}
               transformMode={transformMode}
-              transformable={interactive && !item.locked && cameraPilotMode === "idle" && !selectedObjectMotionKeyframeId}
+              transformable={
+                interactive
+                && !motionStudioOpen
+                && !item.locked
+                && cameraPilotMode === "idle"
+                && !selectedObjectMotionKeyframeId
+              }
               translationSnap={translationSnap}
               onSelect={handleObjectSelect}
             />
@@ -1422,6 +1640,7 @@ export function SceneRoot({ renderMode = "interactive" }: { renderMode?: SceneRo
           <CharacterRouteRig
             key={`${character.id}-route`}
             character={character}
+            duration={activeMotionDuration}
             progress={cameraMotionProgress}
             playing={cameraMotionPlaying}
             showHandles={interactive}
@@ -1449,7 +1668,12 @@ export function SceneRoot({ renderMode = "interactive" }: { renderMode?: SceneRo
                   />
                 ) : null}
                 {interactive && cameraPilotMode === "idle" && (object?.id === selectedObjectId || (motionStudioOpen && camera.id === activeCameraId)) ? (
-                  <CameraMotionPathRig camera={camera} scene={scene} translationSnap={translationSnap} />
+                  <CameraMotionPathRig
+                    camera={camera}
+                    scene={scene}
+                    sceneRootRef={sceneRootRef}
+                    translationSnap={translationSnap}
+                  />
                 ) : null}
               </group>
             ))

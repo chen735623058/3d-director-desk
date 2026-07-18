@@ -6,6 +6,7 @@ import {
   DEFAULT_VIEWPORT_ROTATE_SENSITIVITY,
   DEFAULT_VIEWPORT_ZOOM_SENSITIVITY,
 } from "../schema/viewportSensitivity";
+import { getRuntimePlaybackProgress, setRuntimePlaybackProgress } from "../runtime/playbackRuntime";
 
 function createMemoryStorage(): Storage {
   const storage = new Map<string, string>();
@@ -66,6 +67,8 @@ it("seeds the demo with one mannequin role and one camera", () => {
     loop: false,
     interpolation: "smooth",
     easing: "ease-in-out",
+    speedMode: "soft",
+    customEasing: [0, 0, 1, 1],
     keyframes: [],
   });
 });
@@ -244,6 +247,31 @@ it("adds character route points without overwriting an existing point", () => {
   expect(useDirectorStore.getState().selectedObjectMotionKeyframeId).toBe(secondId);
 });
 
+it("stores character point holds and switches manual arrival edits to custom timing", () => {
+  useDirectorStore.setState(createInitialDirectorState());
+  const characterId = "char_default_a";
+  const firstId = useDirectorStore.getState().addCharacterRoutePoint(characterId)!;
+  useDirectorStore.getState().addCharacterRoutePoint(characterId);
+
+  useDirectorStore.getState().updateObjectMotionKeyframe(characterId, firstId, {
+    time: 0.15,
+    pointBehavior: "hold",
+    holdSeconds: 1.5,
+    holdAction: "custom",
+    holdActionPresetId: "wave-cycle",
+  });
+
+  const path = useDirectorStore.getState().project.objects.find((item) => item.id === characterId)?.motionPath;
+  expect(path?.speedMode).toBe("custom");
+  expect(path?.keyframes.find((keyframe) => keyframe.id === firstId)).toMatchObject({
+    time: 0.15,
+    pointBehavior: "hold",
+    holdSeconds: 1.5,
+    holdAction: "custom",
+    holdActionPresetId: "wave-cycle",
+  });
+});
+
 it("updates the viewport aspect ratio selection in ui state", () => {
   useDirectorStore.setState(createInitialDirectorState());
 
@@ -314,6 +342,19 @@ it("updates, clamps, and resets the saved viewport sensitivity", () => {
 
   expect(useDirectorStore.getState().viewportRotateSensitivity).toBe(DEFAULT_VIEWPORT_ROTATE_SENSITIVITY);
   expect(useDirectorStore.getState().viewportZoomSensitivity).toBe(DEFAULT_VIEWPORT_ZOOM_SENSITIVITY);
+});
+
+it("persists and normalizes the performance profile", () => {
+  useDirectorStore.setState(createInitialDirectorState());
+  expect(useDirectorStore.getState().performanceProfile).toBe("auto");
+
+  useDirectorStore.getState().setPerformanceProfile("fluid");
+  expect(useDirectorStore.getState().performanceProfile).toBe("fluid");
+
+  const persisted = JSON.parse(localStorage.getItem("storyai-3d-director-desk-demo") ?? "{}") as {
+    performanceProfile?: string;
+  };
+  expect(persisted.performanceProfile).toBe("fluid");
 });
 
 it("toggles the viewport side panel collapse flag in ui state", () => {
@@ -544,6 +585,29 @@ it("updates and deletes camera motion keyframes while keeping timing normalized"
   expect(useDirectorStore.getState().selectedCameraKeyframeId).toBe(lastKeyframeId);
 });
 
+it("stores camera waypoint holds and switches manual arrival edits to custom timing", () => {
+  useDirectorStore.setState(createInitialDirectorState());
+  const firstId = useDirectorStore.getState().addCameraMotionKeyframe("cam_1")!;
+  useDirectorStore.getState().updateCamera("cam_1", {
+    transform: { ...useDirectorStore.getState().project.cameras[0].transform, position: [4, 2, 0] },
+  });
+  useDirectorStore.getState().addCameraMotionKeyframe("cam_1");
+
+  useDirectorStore.getState().updateCameraMotionKeyframe("cam_1", firstId, {
+    time: 0.1,
+    pointBehavior: "hold",
+    holdSeconds: 1.25,
+  });
+
+  const path = useDirectorStore.getState().project.cameras[0].motionPath;
+  expect(path?.speedMode).toBe("custom");
+  expect(path?.keyframes.find((keyframe) => keyframe.id === firstId)).toMatchObject({
+    time: 0.1,
+    pointBehavior: "hold",
+    holdSeconds: 1.25,
+  });
+});
+
 it("inserts a camera waypoint halfway between two existing points without retiming the rest", () => {
   useDirectorStore.setState(createInitialDirectorState());
   const firstId = useDirectorStore.getState().recordCameraMotionSnapshot(
@@ -577,6 +641,41 @@ it("inserts a camera waypoint halfway between two existing points without retimi
   });
   expect(state.selectedCameraKeyframeIds).toEqual([insertedId]);
   expect(state.cameraMotionProgress).toBe(0.5);
+});
+
+it("preserves matching body tracking when inserting a camera waypoint", () => {
+  useDirectorStore.setState(createInitialDirectorState());
+  const firstId = useDirectorStore.getState().recordCameraMotionSnapshot(
+    "cam_1",
+    { position: [0, 2, 8], target: [0, 1, 0], fov: 50 },
+    null,
+    0
+  )!;
+  const secondId = useDirectorStore.getState().recordCameraMotionSnapshot(
+    "cam_1",
+    { position: [4, 2, 4], target: [0, 1, 0], fov: 50 },
+    null,
+    1
+  )!;
+  for (const keyframeId of [firstId, secondId]) {
+    useDirectorStore.getState().updateCameraMotionKeyframe("cam_1", keyframeId, {
+      targetMode: "object",
+      targetObjectId: "char_default_a",
+      targetBodyPart: "rightHand",
+      targetFollowMode: "smooth",
+    });
+  }
+
+  const insertedId = useDirectorStore.getState().insertCameraMotionKeyframeAfter("cam_1", firstId);
+  const inserted = useDirectorStore.getState().project.cameras[0].motionPath?.keyframes
+    .find((keyframe) => keyframe.id === insertedId);
+
+  expect(inserted).toMatchObject({
+    targetMode: "object",
+    targetObjectId: "char_default_a",
+    targetBodyPart: "rightHand",
+    targetFollowMode: "smooth",
+  });
 });
 
 it("moves any selected camera waypoints together while preserving their direction and timing", () => {
@@ -728,6 +827,30 @@ it("keeps imported local models separate from procedural body types", () => {
   expect(imported?.kind).toBe("prop");
   expect(imported?.bodyType).toBeUndefined();
   expect(imported?.characterRig).toBeUndefined();
+});
+
+it("places newly added character models beside existing characters instead of overlapping them", () => {
+  useDirectorStore.setState(createInitialDirectorState());
+
+  useDirectorStore.getState().addImportedAsset({
+    kind: "character",
+    name: "人物模型 A",
+    fileName: "character-a.fbx",
+    url: "blob:character-a",
+  });
+  useDirectorStore.getState().addImportedAsset({
+    kind: "character",
+    name: "人物模型 B",
+    fileName: "character-b.fbx",
+    url: "blob:character-b",
+  });
+
+  const characters = useDirectorStore.getState().project.objects.filter((item) => item.kind === "character");
+  expect(characters.map((character) => character.transform.position)).toEqual([
+    [0, 0, 0],
+    [-1.25, 0, 0],
+    [1.25, 0, 0],
+  ]);
 });
 
 it("keeps imported model object ids unique after deleting an earlier model", () => {
@@ -882,6 +1005,66 @@ it("auto-persists the latest director scene snapshot after scene changes", () =>
   expect(parsed.project?.objects?.some((item) => item.name === "角色02")).toBe(true);
 });
 
+it("persists only stable local model metadata instead of duplicating model bytes in localStorage", () => {
+  useDirectorStore.getState().addImportedAsset({
+    kind: "character",
+    name: "本地演员",
+    fileName: "actor.glb",
+    url: "director-asset://local/actor-storage-key",
+    assetSource: "local",
+    modelFormat: "glb",
+    storageKey: "actor-storage-key",
+    byteLength: 25_000_000,
+    characterRigProfile: "mixamo",
+    characterImportReadiness: "ready",
+  });
+
+  const snapshot = localStorage.getItem("storyai-3d-director-desk-demo");
+  expect(snapshot).not.toBeNull();
+  expect(snapshot).toContain("actor-storage-key");
+  expect(snapshot).toContain("director-asset://local/actor-storage-key");
+  expect(snapshot?.length).toBeLessThan(20_000);
+
+  const restored = createInitialDirectorState({ includePersistedScene: true });
+  const asset = restored.project.assets.find((item) => item.storageKey === "actor-storage-key");
+  expect(asset).toMatchObject({
+    id: "local_asset_actor-storage-key",
+    kind: "character",
+    fileName: "actor.glb",
+    modelFormat: "glb",
+    byteLength: 25_000_000,
+    characterRigProfile: "mixamo",
+    characterImportReadiness: "ready",
+  });
+});
+
+it("clears imported animation references from character state and route points when the file is removed", () => {
+  const animationAssetId = useDirectorStore.getState().addImportedAnimationAsset({
+    name: "走路动作",
+    fileName: "walk.fbx",
+    url: "director-asset://local/walk-key",
+    modelFormat: "fbx",
+    storageKey: "walk-key",
+    byteLength: 2048,
+    rigProfile: "mixamo",
+    clips: [{ id: "clip_1", name: "Walk", duration: 1.1, trackCount: 52 }],
+  });
+  const actionId = `imported-action:${encodeURIComponent(animationAssetId)}:clip_1`;
+  useDirectorStore.getState().applyCharacterActionPreset("char_default_a", actionId);
+  const pointId = useDirectorStore.getState().addCharacterRoutePoint("char_default_a")!;
+  useDirectorStore.getState().updateObjectMotionKeyframe("char_default_a", pointId, {
+    actionPresetId: actionId,
+    holdActionPresetId: actionId,
+  });
+
+  useDirectorStore.getState().removeImportedAnimationAsset(animationAssetId);
+  const role = useDirectorStore.getState().project.objects.find((item) => item.id === "char_default_a");
+  expect(useDirectorStore.getState().project.animationAssets).toEqual([]);
+  expect(role?.characterRig?.actionPresetId).toBeNull();
+  expect(role?.motionPath?.keyframes[0]?.actionPresetId).toBeNull();
+  expect(role?.motionPath?.keyframes[0]?.holdActionPresetId).toBeNull();
+});
+
 it("keeps persisted director scenes isolated per canvas card instance", () => {
   useDirectorStore.getState().openScopedScene("node_director_a");
   useDirectorStore.getState().setViewportAspectRatio("16:9");
@@ -968,6 +1151,8 @@ it("adds an empty motion path when hydrating a legacy camera", () => {
     loop: false,
     interpolation: "smooth",
     easing: "ease-in-out",
+    speedMode: "soft",
+    customEasing: [0, 0, 1, 1],
     keyframes: [],
   });
 });
@@ -988,6 +1173,24 @@ it("keeps motion playback state transient when saving the project snapshot", () 
   expect(persisted).not.toHaveProperty("cameraMotionPlaying");
   expect(persisted).not.toHaveProperty("selectedCameraKeyframeId");
   expect((persisted.project as { cameras?: unknown[] } | undefined)?.cameras).toHaveLength(1);
+});
+
+it("keeps timeline edits synchronized with runtime playback", () => {
+  useDirectorStore.getState().setCameraMotionProgress(0.375);
+
+  expect(useDirectorStore.getState().cameraMotionProgress).toBe(0.375);
+  expect(getRuntimePlaybackProgress()).toBe(0.375);
+});
+
+it("commits the latest runtime progress when playback pauses", () => {
+  useDirectorStore.getState().setCameraMotionProgress(0.2);
+  useDirectorStore.getState().setCameraMotionPlaying(true);
+  setRuntimePlaybackProgress(0.64);
+
+  useDirectorStore.getState().setCameraMotionPlaying(false);
+
+  expect(useDirectorStore.getState().cameraMotionProgress).toBe(0.64);
+  expect(getRuntimePlaybackProgress()).toBe(0.64);
 });
 
 it("migrates persisted procedural characters to the built-in UE4 mannequin rig", () => {
@@ -1030,6 +1233,41 @@ it("migrates persisted procedural characters to the built-in UE4 mannequin rig",
       "head.yaw": 12,
     },
   });
+});
+
+it("preserves persisted Mixamo characters and their selected action", () => {
+  const project = createDefaultDirectorProject();
+  const character = project.objects.find((item) => item.kind === "character");
+
+  if (!character) throw new Error("Expected default character");
+
+  character.assetRefId = "mixamo-character-remy";
+  character.characterRig = {
+    rigType: "mixamo",
+    posePresetId: "stand",
+    actionPresetId: "walk-cycle",
+    controls: {},
+  };
+  project.assets.push({
+    id: "mixamo-character-remy",
+    kind: "character",
+    sourceType: "model",
+    fileName: "remy.fbx",
+    name: "Remy",
+    url: "/local-assets/mixamo/characters/remy.fbx",
+    assetSource: "library",
+  });
+
+  localStorage.setItem(
+    "storyai-3d-director-desk-demo",
+    JSON.stringify({ ...createInitialDirectorState(), project })
+  );
+
+  const hydratedState = createInitialDirectorState({ includePersistedScene: true });
+  const hydratedCharacter = hydratedState.project.objects.find((item) => item.id === character.id);
+
+  expect(hydratedCharacter?.assetRefId).toBe("mixamo-character-remy");
+  expect(hydratedCharacter?.characterRig).toEqual(character.characterRig);
 });
 
 it("adds the built-in UE4 mannequin rig to persisted characters that predate rig metadata", () => {

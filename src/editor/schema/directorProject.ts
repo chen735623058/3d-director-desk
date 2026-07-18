@@ -1,3 +1,9 @@
+import type {
+  DirectorCharacterBoneMap,
+  DirectorCameraTargetBodyPart,
+  DirectorCameraTargetFollowMode,
+} from "./semanticBody";
+
 export type ViewMode = "director" | "camera";
 export type RightPanelKind = "scene" | "character" | "prop" | "camera";
 export type DirectorObjectKind = "character" | "scene" | "prop" | "camera" | "panorama";
@@ -23,6 +29,10 @@ export type CharacterBodyType =
 export type DirectorAssetKind = "character" | "scene" | "prop" | "panorama";
 export type DirectorAssetSource = "local" | "library";
 export type PanoramaProjectionMode = "equirectangular" | "backdrop";
+export type DirectorModelFormat = "fbx" | "obj" | "glb";
+export type GroundMaterialPresetId = "studio" | "concrete" | "asphalt" | "wood" | "grass";
+export type CharacterRigProfile = "mixamo" | "mixamo-alt" | "bip" | "cc-base" | "generic-humanoid" | "unknown";
+export type CharacterImportReadiness = "ready" | "native-only" | "manual-mapping" | "static-only";
 
 export interface DirectorTransform {
   position: [number, number, number];
@@ -40,7 +50,11 @@ export interface SceneSettings {
   panoramaRadius: number;
   showLabels: boolean;
   snapToGrid: boolean;
+  showGrid: boolean;
   showGround: boolean;
+  groundMaterialPreset: GroundMaterialPresetId;
+  /** Multiplier for the world-space size of each ground texture tile. */
+  groundTextureScale: number;
   groundColor: string;
   groundBrightness: number;
   groundOpacity: number;
@@ -64,6 +78,33 @@ export interface DirectorAssetRef {
   url: string;
   assetSource?: DirectorAssetSource;
   projectionMode?: PanoramaProjectionMode;
+  modelFormat?: DirectorModelFormat;
+  storageKey?: string;
+  byteLength?: number;
+  characterRigProfile?: CharacterRigProfile;
+  characterImportReadiness?: CharacterImportReadiness;
+  characterOrientationCorrection?: [number, number, number];
+  characterBoneMap?: DirectorCharacterBoneMap;
+}
+
+export interface DirectorAnimationClipRef {
+  id: string;
+  name: string;
+  duration: number;
+  trackCount: number;
+}
+
+export interface DirectorAnimationAssetRef {
+  id: string;
+  name: string;
+  fileName: string;
+  url: string;
+  modelFormat: Extract<DirectorModelFormat, "fbx" | "glb">;
+  storageKey?: string;
+  byteLength?: number;
+  rigProfile: CharacterRigProfile;
+  sourceCharacterAssetId?: string;
+  clips: DirectorAnimationClipRef[];
 }
 
 export interface DirectorObject {
@@ -92,10 +133,18 @@ export interface DirectorObjectMotionKeyframe {
   actionPresetId?: string | null;
   /** Path-facing turns toward the next route point; manual keeps the point rotation. */
   facingMode?: "path" | "manual";
+  /** Pass-through keeps moving; hold pauses at this point for holdSeconds. */
+  pointBehavior?: DirectorRoutePointBehavior;
+  holdSeconds?: number;
+  /** Character pose/action used while this point is holding. */
+  holdAction?: DirectorRouteHoldAction;
+  holdActionPresetId?: string | null;
 }
 
 export interface DirectorObjectMotionPath {
   interpolation: CameraMotionInterpolation;
+  speedMode?: DirectorRouteSpeedMode;
+  customEasing?: DirectorRouteCubicBezier;
   keyframes: DirectorObjectMotionKeyframe[];
 }
 
@@ -108,6 +157,10 @@ export interface DirectorCameraCapture {
 
 export type CameraMotionInterpolation = "linear" | "smooth";
 export type CameraMotionEasing = "linear" | "ease-in-out";
+export type DirectorRouteSpeedMode = "uniform" | "soft" | "custom";
+export type DirectorRoutePointBehavior = "pass" | "hold";
+export type DirectorRouteHoldAction = "stand" | "current" | "custom";
+export type DirectorRouteCubicBezier = [number, number, number, number];
 
 export interface DirectorCameraMotionKeyframe {
   id: string;
@@ -118,6 +171,15 @@ export interface DirectorCameraMotionKeyframe {
   /** Each waypoint may independently aim at a moving scene subject. */
   targetMode?: "manual" | "object";
   targetObjectId?: string | null;
+  /** Semantic animated body part used when the target is a character. */
+  targetBodyPart?: DirectorCameraTargetBodyPart;
+  /** Immediate follows exactly; smooth applies temporal damping in each render view. */
+  targetFollowMode?: DirectorCameraTargetFollowMode;
+  /** Suppresses high-frequency body animation shake while retaining subject movement. */
+  targetStabilizationEnabled?: boolean;
+  /** Pass-through keeps moving; hold pauses at this point for holdSeconds. */
+  pointBehavior?: DirectorRoutePointBehavior;
+  holdSeconds?: number;
 }
 
 export interface DirectorCameraMotionPath {
@@ -125,6 +187,8 @@ export interface DirectorCameraMotionPath {
   loop: boolean;
   interpolation: CameraMotionInterpolation;
   easing: CameraMotionEasing;
+  speedMode?: DirectorRouteSpeedMode;
+  customEasing?: DirectorRouteCubicBezier;
   keyframes: DirectorCameraMotionKeyframe[];
 }
 
@@ -147,6 +211,7 @@ export interface DirectorProject {
   version: 1;
   scene: SceneSettings;
   assets: DirectorAssetRef[];
+  animationAssets?: DirectorAnimationAssetRef[];
   objects: DirectorObject[];
   cameras: DirectorCameraShot[];
   activeCameraId: string | null;

@@ -1,6 +1,6 @@
 import type { CameraMotionSnapshot } from "./cameraMotion";
 import { getCameraMotionPath, getCameraMotionSnapshot } from "./cameraMotion";
-import { getAnimatedCameraFocusTarget } from "./cameraTarget";
+import { getAnimatedCameraFocusTarget, type CameraObjectFocusResolver } from "./cameraTarget";
 import type { DirectorCameraShot, DirectorObject, SceneSettings } from "./directorProject";
 import { getCameraViewSnapshotFromShot } from "./cameraGeometry";
 import { constrainCameraPosition, constrainObjectMotionTransform } from "./pathCollision";
@@ -10,7 +10,8 @@ export function getCameraPlaybackSnapshot(
   camera: DirectorCameraShot,
   objects: DirectorObject[],
   progress: number,
-  scene?: SceneSettings
+  scene?: SceneSettings,
+  resolveObjectFocus?: CameraObjectFocusResolver
 ): CameraMotionSnapshot {
   const motionPath = getCameraMotionPath(camera);
   const base = motionPath.keyframes.length >= 2
@@ -19,10 +20,15 @@ export function getCameraPlaybackSnapshot(
   const constrainedObjects = scene?.pathCollisionEnabled
     ? objects.map((object) => ({
         ...object,
-        transform: constrainObjectMotionTransform(object, getObjectMotionSnapshot(object, progress), scene, objects),
+        transform: constrainObjectMotionTransform(
+          object,
+          getObjectMotionSnapshot(object, progress, motionPath.duration),
+          scene,
+          objects,
+        ),
       }))
     : objects;
-  const trackingTarget = getAnimatedCameraFocusTarget(camera, constrainedObjects, progress);
+  const trackingTarget = getAnimatedCameraFocusTarget(camera, constrainedObjects, progress, resolveObjectFocus);
   const position = scene ? constrainCameraPosition(base.position, scene, objects) : base.position;
 
   return trackingTarget ? { ...base, position, target: trackingTarget } : { ...base, position };

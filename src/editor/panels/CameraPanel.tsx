@@ -13,7 +13,7 @@ import { downloadDataUrl } from "../io/screenshotExport";
 import { postDirectorDeskCapturesToHost } from "../io/hostBridge";
 import { getDirectorObjectFocusTarget, isCameraFocusableObject } from "../schema/cameraTarget";
 import type { DirectorCameraCapture } from "../schema/directorProject";
-import { getCameraMotionPath } from "../schema/cameraMotion";
+import { getCameraMotionPath, getCameraMotionTimingPlan } from "../schema/cameraMotion";
 import { useDirectorStore } from "../store/directorStore";
 
 const VIEWER_ZOOM_MIN = 0.25;
@@ -87,6 +87,7 @@ export function CameraPanel() {
       ? `object:${currentCamera.targetObjectId}`
       : "manual";
   const motionPath = useMemo(() => getCameraMotionPath(currentCamera), [currentCamera]);
+  const motionTimingPlan = useMemo(() => getCameraMotionTimingPlan(currentCamera), [currentCamera]);
   const selectedMotionKeyframe =
     motionPath.keyframes.find((item) => item.id === selectedCameraKeyframeId) ?? motionPath.keyframes[0] ?? null;
 
@@ -653,10 +654,13 @@ export function CameraPanel() {
                     type="button"
                     aria-label={`选择轨迹点 K${index + 1}`}
                     aria-pressed={selectedMotionKeyframe?.id === keyframe.id}
-                    onClick={() => handleSelectMotionKeyframe(keyframe.id, keyframe.time)}
+                    onClick={() => handleSelectMotionKeyframe(
+                      keyframe.id,
+                      motionTimingPlan?.arrivals[index] ?? keyframe.time
+                    )}
                   >
                     <span>K{index + 1}</span>
-                    <small>{formatMotionTime(keyframe.time)}</small>
+                    <small>{formatMotionTime(motionTimingPlan?.arrivals[index] ?? keyframe.time)}</small>
                   </button>
                 </div>
               ))}

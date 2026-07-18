@@ -4,7 +4,7 @@ import { Vector3 } from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 
 const DEFAULT_MOVE_SPEED = 6;
-const MAX_FRAME_DELTA = 0.1;
+const MAX_FRAME_DELTA = 0.05;
 const HORIZONTAL_EPSILON = 1e-8;
 
 const DIRECTOR_MOVEMENT_CODES = new Set([
@@ -106,6 +106,9 @@ export function DirectorKeyboardController({
   const pressedCodesRef = useRef(new Set<string>());
   const cameraForwardRef = useRef(new Vector3());
   const lastHorizontalForwardRef = useRef(new Vector3(0, 0, -1));
+  const movementRef = useRef(new Vector3());
+  const rightRef = useRef(new Vector3());
+  const worldUpRef = useRef(new Vector3(0, 1, 0));
 
   useEffect(() => {
     const pressedCodes = pressedCodesRef.current;
@@ -168,11 +171,16 @@ export function DirectorKeyboardController({
         .normalize();
     }
 
-    const movement = getDirectorMovementDirection(
-      intent,
-      cameraForwardRef.current,
-      lastHorizontalForwardRef.current
-    ).multiplyScalar(Math.max(0, moveSpeed) * Math.min(Math.max(delta, 0), MAX_FRAME_DELTA));
+    rightRef.current
+      .crossVectors(lastHorizontalForwardRef.current, worldUpRef.current)
+      .normalize();
+    const movement = movementRef.current
+      .copy(lastHorizontalForwardRef.current)
+      .multiplyScalar(intent.forward)
+      .addScaledVector(rightRef.current, intent.strafe)
+      .addScaledVector(worldUpRef.current, intent.vertical);
+    if (movement.lengthSq() > 1) movement.normalize();
+    movement.multiplyScalar(Math.max(0, moveSpeed) * Math.min(Math.max(delta, 0), MAX_FRAME_DELTA));
 
     camera.position.add(movement);
     controls.target.add(movement);

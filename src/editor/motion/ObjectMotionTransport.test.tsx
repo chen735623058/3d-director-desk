@@ -88,6 +88,52 @@ it("plays and scrubs a camera-only shot, pausing as soon as the timeline is drag
   expect(useDirectorStore.getState().cameraMotionPlaying).toBe(true);
 });
 
+it("lets users drag either visible route track to pause and seek the shared time", () => {
+  const state = useDirectorStore.getState();
+  useDirectorStore.setState({
+    ...state,
+    cameraMotionPlaying: true,
+    selectedObjectId: "char_default_a",
+    selectedObjectIds: ["char_default_a"],
+    project: {
+      ...state.project,
+      cameras: state.project.cameras.map((camera) => ({
+        ...camera,
+        motionPath: {
+          ...camera.motionPath!,
+          keyframes: [
+            { id: "shot_1", time: 0, position: [0, 2, 8], target: [0, 1, 0], fov: 50 },
+            { id: "shot_2", time: 1, position: [4, 2, 4], target: [0, 1, 0], fov: 50 },
+          ],
+        },
+      })),
+      objects: state.project.objects.map((object) => object.id === "char_default_a"
+        ? {
+            ...object,
+            motionPath: {
+              interpolation: "linear",
+              keyframes: [
+                { id: "route_1", time: 0, transform: object.transform },
+                { id: "route_2", time: 1, transform: { ...object.transform, position: [4, 0, 0] } },
+              ],
+            },
+          }
+        : object),
+    },
+  });
+
+  render(<ObjectMotionTransport />);
+
+  fireEvent.change(screen.getByRole("slider", { name: "拖动镜头时间轴" }), { target: { value: "0.3" } });
+  expect(useDirectorStore.getState().cameraMotionPlaying).toBe(false);
+  expect(useDirectorStore.getState().cameraMotionProgress).toBe(0.3);
+
+  useDirectorStore.getState().setCameraMotionPlaying(true);
+  fireEvent.change(screen.getByRole("slider", { name: "拖动人物时间轴" }), { target: { value: "0.72" } });
+  expect(useDirectorStore.getState().cameraMotionPlaying).toBe(false);
+  expect(useDirectorStore.getState().cameraMotionProgress).toBe(0.72);
+});
+
 it("keeps character route editing out of the playback transport", () => {
   useDirectorStore.setState({
     ...useDirectorStore.getState(),
@@ -146,6 +192,53 @@ it("shows only the compact playback controls while piloting", () => {
   expect(screen.queryByRole("slider", { name: "场景动作时间轴" })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /记录起点|记录当前位置/ })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "回到动作开头" })).not.toBeInTheDocument();
+  expect(screen.queryByLabelText("镜头与对象移动停留时间轴")).not.toBeInTheDocument();
+});
+
+it("shows camera and character move-hold spans on the shared bottom timeline", () => {
+  const state = useDirectorStore.getState();
+  useDirectorStore.setState({
+    ...state,
+    selectedObjectId: "char_default_a",
+    selectedObjectIds: ["char_default_a"],
+    project: {
+      ...state.project,
+      cameras: state.project.cameras.map((camera) => ({
+        ...camera,
+        motionPath: {
+          ...camera.motionPath!,
+          duration: 10,
+          interpolation: "linear",
+          speedMode: "uniform",
+          keyframes: [
+            { id: "camera_start", time: 0, position: [0, 2, 8], target: [0, 1, 0], fov: 50 },
+            { id: "camera_hold", time: 0.5, position: [5, 2, 8], target: [0, 1, 0], fov: 50, pointBehavior: "hold", holdSeconds: 2 },
+            { id: "camera_end", time: 1, position: [10, 2, 8], target: [0, 1, 0], fov: 50 },
+          ],
+        },
+      })),
+      objects: state.project.objects.map((object) => object.id === "char_default_a"
+        ? {
+            ...object,
+            motionPath: {
+              interpolation: "linear",
+              speedMode: "uniform",
+              keyframes: [
+                { id: "actor_start", time: 0, transform: { position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1] } },
+                { id: "actor_hold", time: 0.5, transform: { position: [5, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1] }, pointBehavior: "hold", holdSeconds: 1 },
+                { id: "actor_end", time: 1, transform: { position: [10, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1] } },
+              ],
+            },
+          }
+        : object),
+    },
+  });
+
+  render(<ObjectMotionTransport />);
+
+  expect(screen.getByLabelText("镜头与对象移动停留时间轴")).toBeInTheDocument();
+  expect(screen.getByTitle("镜头停留 2.0 秒")).toBeInTheDocument();
+  expect(screen.getByTitle("角色01停留 1.0 秒")).toBeInTheDocument();
 });
 
 it("keeps recording actions disabled until a character or prop is selected", () => {

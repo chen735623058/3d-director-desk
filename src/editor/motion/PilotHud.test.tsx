@@ -24,6 +24,22 @@ it("shows Q/E lift controls, action playback shortcut, and an accessible crossha
   expect(screen.getByRole("button", { name: "退出掌镜模式" })).toBeInTheDocument();
 });
 
+it("makes empty space visibly lockable with F", () => {
+  render(
+    <PilotHud
+      lockedTargetName={null}
+      mode="pilot"
+      onExit={() => undefined}
+      onRecord={() => undefined}
+      pointedTargetName={null}
+    />
+  );
+
+  expect(screen.getByLabelText("掌镜准星，按 F 锁定当前空间点")).toBeInTheDocument();
+  expect(screen.getByText("空白空间 · 按 F 锁定")).toBeInTheDocument();
+  expect(screen.getByLabelText("掌镜快捷键")).toHaveTextContent("F 锁定主体 / 空间点");
+});
+
 it("keeps only exit and waypoint recording actions in the HUD", () => {
   const onExit = vi.fn();
   const onRecord = vi.fn();

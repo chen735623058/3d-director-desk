@@ -22,7 +22,7 @@ export function AssetImportPanel() {
         导入本地模型
         <input
           aria-label="导入本地模型"
-          accept=".fbx,.obj"
+          accept=".fbx,.obj,.glb"
           type="file"
           onChange={async (event) => {
             const input = event.currentTarget;
@@ -38,7 +38,7 @@ export function AssetImportPanel() {
           }}
         />
         <p className="asset-import-status">
-          {latestLocalModel ? `已导入本地模型: ${latestLocalModel.fileName}` : "支持 FBX / OBJ 素模文件"}
+          {latestLocalModel ? `已导入本地模型: ${latestLocalModel.fileName}` : "支持 FBX / OBJ / GLB 模型文件"}
         </p>
       </label>
       {importError ? <p className="capture-status">{importError}</p> : null}

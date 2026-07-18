@@ -1,3 +1,7 @@
+import { useEffect, useLayoutEffect, useRef } from "react";
+import type { Group } from "three";
+import { disposeIsolatedModelMaterials, isolateAndTintModelMaterials } from "../runtime/modelMaterialTint";
+
 type PartProps = {
   color: string;
   position: [number, number, number];
@@ -169,7 +173,7 @@ function LegacyProp({ modelId }: { modelId: string }) {
   return <BoxPart color="#73808a" position={[0, 0.5, 0]} scale={[1, 1, 1]} />;
 }
 
-export function BuiltInLifeModel({ modelId }: { modelId: string }) {
+function BuiltInLifeModelContent({ modelId }: { modelId: string }) {
   const id = modelId.toLowerCase();
   if (id.includes("sedan")) return <Vehicle color="#4b7cac" kind="sedan" />;
   if (id.includes("suv")) return <Vehicle color="#6b7650" kind="suv" />;
@@ -184,4 +188,23 @@ export function BuiltInLifeModel({ modelId }: { modelId: string }) {
   if (id.includes("street_tree")) return <Tree />;
   if (id.includes("trash_sorting")) return <TrashBins />;
   return <LegacyProp modelId={id} />;
+}
+
+export function BuiltInLifeModel({ color, modelId }: { color?: string; modelId: string }) {
+  const rootRef = useRef<Group>(null);
+  useLayoutEffect(() => {
+    if (rootRef.current) isolateAndTintModelMaterials(rootRef.current, color);
+  }, [color]);
+  useEffect(() => {
+    const root = rootRef.current;
+    return () => {
+      if (root) disposeIsolatedModelMaterials(root);
+    };
+  }, []);
+
+  return (
+    <group ref={rootRef} name="built-in-life-model">
+      <BuiltInLifeModelContent modelId={modelId} />
+    </group>
+  );
 }

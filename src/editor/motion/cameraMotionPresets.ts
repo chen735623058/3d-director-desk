@@ -16,7 +16,7 @@ export const CAMERA_MOTION_PRESETS: CameraMotionPreset[] = [
   },
   {
     id: "character-follow",
-    label: "人物跟拍",
+    label: "平稳跟拍节奏",
     description: "6 秒，平滑稳定，适合边走边拍",
     patch: { duration: 6, interpolation: "smooth", easing: "ease-in-out" },
   },

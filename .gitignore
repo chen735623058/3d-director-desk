@@ -4,7 +4,15 @@ dist
 .vercel
 coverage
 .local-assets
-public/local-assets
+.firecrawl/
+.research-video/
+.video-build/
+成片/
+public/local-assets/*
+!public/local-assets/mixamo/
+!public/local-assets/mixamo/**
+!public/local-assets/guo-3d-assets/
+!public/local-assets/guo-3d-assets/**
 *.log
 npm-debug.log*
 .env
